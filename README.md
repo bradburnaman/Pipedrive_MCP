@@ -50,25 +50,7 @@ Add the MCP server to your Claude Code configuration.
 }
 ```
 
-**SSE mode** (networked, for multi-client use):
-
-Start the server:
-
-```bash
-PIPEDRIVE_API_TOKEN=your_token_here node dist/index.js --transport sse --port 3000
-```
-
-Then configure the MCP client:
-
-```json
-{
-  "mcpServers": {
-    "pipedrive": {
-      "url": "http://localhost:3000/sse"
-    }
-  }
-}
-```
+**SSE mode** — not yet implemented. Planned for a future release. Use stdio mode for now.
 
 ## Available Tools
 
