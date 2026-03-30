@@ -255,10 +255,17 @@ This implementation includes 429 retry logic (reading rate limit headers from th
 
 ```typescript
 // tests/lib/error-normalizer.test.ts
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { normalizeApiCall } from '../../src/lib/error-normalizer.js';
 
 describe('normalizeApiCall', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it('passes through successful responses', async () => {
     const result = await normalizeApiCall(async () => ({
       status: 200,
@@ -387,7 +394,9 @@ describe('normalizeApiCall', () => {
       if (calls === 1) return { status: 502, data: {} };
       return { status: 200, data: { success: true, data: { id: 1 } } };
     };
-    const result = await normalizeApiCall(fn);
+    const promise = normalizeApiCall(fn);
+    await vi.advanceTimersByTimeAsync(1500); // 502 retries after 1s
+    const result = await promise;
     expect(calls).toBe(2);
     expect(result).toEqual({ status: 200, data: { success: true, data: { id: 1 } } });
   });
@@ -399,7 +408,9 @@ describe('normalizeApiCall', () => {
       if (calls === 1) return { status: 503, data: {} };
       return { status: 200, data: { success: true, data: { id: 1 } } };
     };
-    const result = await normalizeApiCall(fn);
+    const promise = normalizeApiCall(fn);
+    await vi.advanceTimersByTimeAsync(2500); // 503 retries after 2s
+    const result = await promise;
     expect(calls).toBe(2);
   });
 
@@ -432,13 +443,15 @@ describe('normalizeApiCall', () => {
           status: 429,
           data: {},
           headers: new Headers({
-            'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 1),
+            'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 2),
           }),
         };
       }
       return { status: 200, data: { success: true, data: { id: 1 } } };
     };
-    const result = await normalizeApiCall(fn);
+    const promise = normalizeApiCall(fn);
+    await vi.advanceTimersByTimeAsync(3000); // advance past the 2s reset delay
+    const result = await promise;
     expect(calls).toBe(2);
     expect(result.status).toBe(200);
   });
@@ -448,10 +461,12 @@ describe('normalizeApiCall', () => {
       status: 429,
       data: {},
       headers: new Headers({
-        'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 1),
+        'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 2),
       }),
     });
-    await expect(normalizeApiCall(fn)).rejects.toMatchObject({
+    const promise = normalizeApiCall(fn);
+    await vi.advanceTimersByTimeAsync(3000);
+    await expect(promise).rejects.toMatchObject({
       error: true,
       code: 429,
     });
@@ -462,7 +477,9 @@ describe('normalizeApiCall', () => {
       status: 429,
       data: {},
     });
-    await expect(normalizeApiCall(fn)).rejects.toMatchObject({
+    const promise = normalizeApiCall(fn);
+    await vi.advanceTimersByTimeAsync(3000); // fallback delay is 2s
+    await expect(promise).rejects.toMatchObject({
       error: true,
       code: 429,
     });
@@ -627,7 +644,7 @@ export async function normalizeApiCall(
 npx vitest run tests/lib/error-normalizer.test.ts
 ```
 
-Expected: All tests PASS. Note: The retry tests may be slow due to the delay (1-2 seconds). If needed, mock `setTimeout` via `vi.useFakeTimers()` to speed them up.
+Expected: All tests PASS. Retry tests use `vi.useFakeTimers()` and `vi.advanceTimersByTimeAsync()` to avoid real delays.
 
 - [ ] **Step 5: Commit**
 

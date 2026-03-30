@@ -444,93 +444,12 @@ async function main() {
     await server.connect(transport);
     logger.info('Server running on stdio');
   } else {
-    // SSE mode
-    // NOTE: The SSE implementation depends on the installed SDK version.
-    // The implementing agent should verify the SSEServerTransport API against
-    // the installed @modelcontextprotocol/sdk version. The structure below
-    // matches the common SDK pattern but may need adjustment.
-    const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
-    const http = await import('node:http');
-
-    // Track active transports for clean shutdown
-    const activeTransports = new Map<string, InstanceType<typeof SSEServerTransport>>();
-
-    const httpServer = http.createServer(async (req, res) => {
-      // GET /sse — Establish SSE connection
-      if (req.method === 'GET' && req.url === '/sse') {
-        logger.info('SSE client connecting');
-        const transport = new SSEServerTransport('/messages', res);
-        const sessionId = transport.sessionId ?? crypto.randomUUID();
-        activeTransports.set(sessionId, transport);
-
-        // Clean up on disconnect
-        res.on('close', () => {
-          activeTransports.delete(sessionId);
-          logger.info({ sessionId }, 'SSE client disconnected');
-        });
-
-        await server.connect(transport);
-        logger.info({ sessionId }, 'SSE client connected');
-        return;
-      }
-
-      // POST /messages — Handle incoming MCP messages from SSE clients
-      if (req.method === 'POST' && req.url?.startsWith('/messages')) {
-        // The SSE transport handles POST message routing internally.
-        // Parse the URL to extract session info if needed by the SDK version.
-        // The implementing agent should verify this against the installed SDK.
-        //
-        // Common pattern: the SSEServerTransport instance handles its own
-        // message routing via the response object passed during construction.
-        // Some SDK versions require explicit message forwarding here.
-
-        // Collect body
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) {
-          chunks.push(chunk as Buffer);
-        }
-        const body = Buffer.concat(chunks).toString('utf-8');
-
-        // Try to find the matching transport and forward the message
-        // SDK versions vary in how they expose this — check the installed version
-        const url = new URL(req.url, `http://localhost:${config.port}`);
-        const sessionId = url.searchParams.get('sessionId');
-
-        if (sessionId && activeTransports.has(sessionId)) {
-          const transport = activeTransports.get(sessionId)!;
-          // Forward the message to the transport
-          // The exact method depends on the SDK version
-          try {
-            await transport.handlePostMessage(req, res, body);
-          } catch (err) {
-            logger.error({ err, sessionId }, 'Error handling SSE message');
-            if (!res.headersSent) {
-              res.writeHead(500);
-              res.end('Internal server error');
-            }
-          }
-        } else {
-          res.writeHead(400);
-          res.end('Invalid or missing session');
-        }
-        return;
-      }
-
-      // Health check endpoint
-      if (req.method === 'GET' && req.url === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok' }));
-        return;
-      }
-
-      // Everything else — 404
-      res.writeHead(404);
-      res.end('Not found');
-    });
-
-    httpServer.listen(config.port, () => {
-      logger.info({ port: config.port }, 'Server running on SSE');
-    });
+    // SSE mode — not yet implemented
+    // The SSE transport API varies across MCP SDK versions and requires
+    // verification against the installed version. Implement as a fast-follow
+    // after the stdio path is working end-to-end.
+    logger.fatal('SSE transport is not yet implemented. Use stdio mode (the default) or implement SSE support against the installed SDK version.');
+    process.exit(1);
   }
 
   // Graceful shutdown — 5-second timeout
@@ -564,13 +483,7 @@ main().catch(err => {
 npx tsc --noEmit
 ```
 
-Expected: No errors. If there are errors related to the SSE transport API, check the installed SDK version:
-
-```bash
-npm ls @modelcontextprotocol/sdk
-```
-
-Adjust the SSE transport usage to match the installed version. The `SSEServerTransport` constructor signature and `handlePostMessage` method name may vary across SDK versions.
+Expected: No errors. SSE transport is stubbed out — it will log a fatal error and exit if invoked. SSE will be implemented as a fast-follow once stdio is working end-to-end.
 
 - [ ] **Step 3: Manual smoke test (stdio mode)**
 
@@ -588,7 +501,7 @@ Expected: Server starts, validates token, returns an `initialize` response on st
 
 ```bash
 git add src/server.ts src/index.ts tests/server.test.ts
-git commit -m "feat: server entry point with tool registration, audit logging, and dual transport"
+git commit -m "feat: server entry point with tool registration, audit logging, stdio transport"
 ```
 
 ---
@@ -624,15 +537,9 @@ The redirect happens in ALL modes, not just stdio. This is correct because:
 
 The redirect happens BEFORE any module imports (after `dotenv/config` which has no stdout side effects). This closes the timing gap where module initialization code could write to stdout.
 
-### SSE Transport Note
+### SSE Transport
 
-The SSE implementation uses `SSEServerTransport` from the MCP SDK. The exact API varies by SDK version. The implementing agent should:
-
-1. Check the installed SDK version: `npm ls @modelcontextprotocol/sdk`
-2. Look at the `SSEServerTransport` type definitions in `node_modules/@modelcontextprotocol/sdk/dist/server/sse.d.ts`
-3. Adjust the constructor call and message handling to match
-
-The basic pattern (GET /sse for connection, POST /messages for incoming) is stable across versions. The method for forwarding POST bodies to the transport is what may differ.
+SSE is stubbed out in v1. The entry point logs a fatal error and exits if `--transport sse` is passed. SSE will be implemented as a fast-follow once the stdio path is verified end-to-end. When implementing, check the installed SDK's `SSEServerTransport` type definitions.
 
 ### Graceful Shutdown
 
