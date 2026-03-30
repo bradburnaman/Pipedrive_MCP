@@ -80,7 +80,7 @@ The Error Normalizer wraps all outbound API calls, including those initiated by 
 
 ### stdout Safety (stdio mode)
 
-After transport initialization, redirect `process.stdout.write` to stderr as a safety net. This catches stray `console.log` calls or dependency noise that would corrupt the MCP JSON-RPC protocol stream. The logger (pino) is explicitly configured to write to stderr in stdio mode.
+Redirect `process.stdout.write` to stderr as early as possible — immediately after parsing env vars, before any dependency imports that might have side effects. This closes the timing gap where module initialization code could write to stdout and corrupt the MCP JSON-RPC protocol stream. The MCP SDK's stdio transport is initialized after the redirect is in place. The logger (pino) is explicitly configured to write to stderr in stdio mode.
 
 ---
 
@@ -227,7 +227,7 @@ No delete — intentional. Deleting organizations cascades to linked persons and
 
 **`update-person`** — same params, all optional except `id`
 **`list-persons`** — filters: `owner`, `org_id`, `updated_since`, `sort_by`, `sort_order`, `limit`, `cursor`
-**`search-persons`** — same shape as `search-deals`
+**`search-persons`** — `query` (string, required), `limit` (number, optional), `cursor` (string, optional)
 
 ### Organizations
 
@@ -242,7 +242,7 @@ No delete — intentional. Deleting organizations cascades to linked persons and
 
 **`update-organization`** — same params, all optional except `id`
 **`list-organizations`** — filters: `owner`, `updated_since`, `sort_by`, `sort_order`, `limit`, `cursor`
-**`search-organizations`** — same shape as `search-deals`
+**`search-organizations`** — `query` (string, required), `limit` (number, optional), `cursor` (string, optional)
 
 ### Activities
 
@@ -263,7 +263,7 @@ No delete — intentional. Deleting organizations cascades to linked persons and
 | `done` | boolean | no | Mark as completed |
 
 **`update-activity`** — same params, all optional except `id`
-**`list-activities`** — filters: `type`, `deal_id`, `person_id`, `org_id`, `owner`, `done`, `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD), `limit`, `cursor`
+**`list-activities`** — filters: `type`, `deal_id`, `person_id`, `org_id`, `owner`, `done`, `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD), `updated_since` (YYYY-MM-DD), `limit`, `cursor`
 
 ### Notes
 
@@ -278,7 +278,7 @@ No delete — intentional. Deleting organizations cascades to linked persons and
 
 At least one of `deal_id`, `person_id`, or `org_id` must be provided.
 
-**`update-note`** — `id` (number, required), `content` (string, required)
+**`update-note`** — `id` (number, required), `content` (string, required). Note associations (deal, person, org) cannot be changed after creation — this is a Pipedrive API limitation. To relink a note, delete and recreate it.
 **`list-notes`** — filters: `deal_id`, `person_id`, `org_id`, `limit`, `cursor`
 
 ### Reference Tools
@@ -458,7 +458,9 @@ System fields always win at the top level.
 
 Handled in the tool handler, not the Reference Data Resolver. Stage names are not globally unique — two pipelines can have a "Qualified" stage with different IDs.
 
-- **`create-deal`:** Agent specifies pipeline (by name). Tool handler resolves pipeline -> ID, then resolves stage name within that pipeline. If stage name exists in multiple pipelines and no pipeline specified: `"Stage 'Qualified' exists in multiple pipelines: 'Sales', 'Partnerships'. Specify a pipeline to disambiguate."`
+- **`create-deal`:** If both pipeline and stage are provided, resolve stage within that pipeline. If stage is provided without pipeline:
+  - If the stage name is globally unique (exists in only one pipeline): infer the pipeline automatically. Include the inferred pipeline in the response so the agent sees what happened: `"Deal created in pipeline 'Sales' (inferred from stage 'Proposal Sent')."`
+  - If the stage name exists in multiple pipelines: `"Stage 'Qualified' exists in multiple pipelines: 'Sales', 'Partnerships'. Specify a pipeline to disambiguate."`
 - **`update-deal`:** Tool handler fetches deal's current pipeline (from record or cache), resolves stage within that pipeline. If the agent is changing both pipeline and stage in the same update, uses the new pipeline.
 
 ---
@@ -481,7 +483,7 @@ Internal route registry maps each endpoint to its API version. Tool handlers cal
 | Status | Behavior |
 |--------|----------|
 | 401 | `"API token is invalid. Restart the server with a valid token."` |
-| 402/403 | `"Permission denied. Check your Pipedrive plan or token scopes."` |
+| 402/403 | `"Permission denied. Your Pipedrive account may not have access to this feature. Check your Pipedrive plan."` |
 | 404 | `"[Entity] with ID [id] not found."` |
 | 429 | Auto-retry once after reset period; surface error with wait time if still limited |
 | 500 | No retry: `"Pipedrive API error. Try again."` |
@@ -529,7 +531,22 @@ All delete tools (deal, person, activity, note) use a two-step soft contract:
 - **Source:** `PIPEDRIVE_API_TOKEN` environment variable. Required.
 - **Startup validation:** `GET /v1/users/me`. Fail fast with clear error if missing or invalid.
 - **No token in logs:** API token is never logged, included in error messages, or exposed through MCP responses.
-- **Rotation:** Regenerate in Pipedrive settings, update env var, restart server. No hot-reload.
+- **Rotation runbook:**
+  1. Generate a new API token in Pipedrive Settings > Personal preferences > API
+  2. Update the `PIPEDRIVE_API_TOKEN` environment variable (`.env` file or MCP config)
+  3. Restart the MCP server
+  4. Verify the server starts successfully (startup validation confirms the new token works)
+  5. The old token is invalidated automatically by Pipedrive upon regeneration
+  6. Check Pipedrive's audit log (Settings > Security > Audit log) for any unauthorized activity between suspected compromise and rotation
+- **File permissions:** The `.env` file must be `chmod 600` (owner read/write only). The MCP client config file containing environment variables should be treated with the same sensitivity — it contains the API token.
+- **Known security debt:** Pipedrive personal API tokens have full read/write access with no scope restrictions. OAuth2 app tokens with configurable scopes (e.g., `deals:read`, `persons:full`) would reduce blast radius. Evaluate for a future hardening pass — not a v1 blocker.
+
+### Trust Boundary
+
+This MCP server assumes all connected clients are trusted internal users. Specific implications:
+- **Entity resolution error messages** include CRM data (org names, entity IDs) for disambiguation. If the trust boundary ever expands to external agents, these should return IDs and match counts only.
+- **Cursor encoding** is base64 JSON, decodable and modifiable by any client. Cursors are validated on decode but not tamper-proof (no HMAC signing). Worst case: a malformed API call that Pipedrive rejects. If tamper resistance is ever needed, HMAC-sign the cursor payload.
+- **Access control settings** (`PIPEDRIVE_ENABLED_CATEGORIES`, `PIPEDRIVE_DISABLED_TOOLS`) are configured via environment variables, which may live in MCP client config files. These files should be permission-restricted like `.env`.
 
 ### Access Control
 
@@ -560,6 +577,17 @@ For exceptions on top of category settings. Unknown category/tool names logged a
 **Debug level (`PIPEDRIVE_LOG_LEVEL=debug`):**
 - Full param logging for all tools. Development/debugging only.
 
+### Graceful Shutdown
+
+- **SIGTERM/SIGINT handling:** Register handlers for both signals.
+- **SSE mode:** Close active SSE connections cleanly, allow in-flight Pipedrive API calls to complete (5-second timeout), then exit.
+- **stdio mode:** Handle parent process closing stdin (EOF on stdin triggers graceful shutdown). The MCP SDK likely handles this — verify during implementation.
+- **Exit code:** 0 on clean shutdown, 1 on startup failure (bad token, missing env var).
+
+### MCP Server Rate Limiting (SSE mode only)
+
+No server-level rate limiting in v1. In stdio mode, requests are sequential from a single client — not a concern. In SSE mode with a single team of ~7 users, misbehaving clients are unlikely. If SSE mode is ever used with multiple concurrent clients, add a per-client request rate limit to prevent one client from exhausting Pipedrive's API rate limit for everyone. Flagged as a known operational concern for multi-client SSE scenarios.
+
 ### GET-After-Write Eventual Consistency
 
 Pipedrive's API is eventually consistent on some computed/rollup fields. The confirmation GET after a write may occasionally show stale derived values. Documented as known behavior — not mitigated with artificial delays. Rare in practice (millisecond-scale consistency lag).
@@ -571,7 +599,7 @@ Pipedrive's API is eventually consistent on some computed/rollup fields. The con
 ### Unit Tests
 
 - Reference Data Resolver: field label <-> key resolution, collisions, fuzzy matching (within threshold, outside threshold, no suggestion), cache expiry behavior, refresh deduplication
-- Stage resolution: single pipeline, ambiguous stage across pipelines, unknown stage, pipeline + stage combo
+- Stage resolution: single pipeline, ambiguous stage across pipelines, unknown stage, pipeline + stage combo, stage without pipeline (globally unique — infer pipeline), stage without pipeline (ambiguous — error)
 - Entity resolution: single match, multiple matches (disambiguation), no matches, search API failure, case-insensitive matching, partial name rejection
 - Error normalizer: v1 error shapes, v2 error shapes, network failures, each HTTP status code behavior
 - Cursor: encode/decode round-trip, v1 offset format, v2 cursor format, malformed input (invalid base64, invalid JSON, missing fields, negative offset)
@@ -617,12 +645,18 @@ src/
     users.ts            — user tool handler
     fields.ts           — get-fields tool handler
   lib/
-    pipedrive-client.ts    — HTTP client, auth, route registry, rate tracking
-    error-normalizer.ts    — error catching and normalization
-    reference-resolver.ts  — field/enum/user/pipeline/stage/activity-type caching and resolution
-    entity-resolver.ts     — name -> ID search and disambiguation
-    sanitizer.ts        — input trimming, length limits, HTML stripping
-    cursor.ts           — cursor encode/decode/validate
+    pipedrive-client.ts      — HTTP client, auth, route registry, rate tracking
+    error-normalizer.ts      — error catching and normalization
+    reference-resolver/
+      index.ts               — public API, orchestrates sub-resolvers
+      cache.ts               — shared stale-while-revalidate cache with per-type TTLs
+      field-resolver.ts      — field label <-> key, enum option label <-> ID
+      user-resolver.ts       — user name -> ID
+      pipeline-resolver.ts   — pipeline/stage name -> ID
+      activity-types.ts      — activity type validation and caching
+    entity-resolver.ts       — name -> ID search and disambiguation
+    sanitizer.ts             — input trimming, length limits, HTML stripping
+    cursor.ts                — cursor encode/decode/validate
   config.ts             — env var parsing, category/tool access control
   types.ts              — shared type definitions
 ```
