@@ -95,7 +95,7 @@ Redirect `process.stdout.write` to stderr as early as possible — immediately a
 | `create-deal` | Create a new deal. Accepts human-friendly names for pipeline, stage, owner, person, and organization — resolved to IDs automatically. |
 | `update-deal` | Update an existing deal by ID. Same field format as create-deal. |
 | `delete-deal` | Delete a deal by ID. Requires two-step confirmation. |
-| `search-deals` | Find deals by keyword across title and custom fields. Use when you have a name or term but not exact field values. Returns summary shape. |
+| `search-deals` | Find deals by keyword across title and custom fields. Use when you have a name or term but not exact filter values. Returns summary shape. |
 
 ### Persons (6 tools)
 
@@ -106,7 +106,7 @@ Redirect `process.stdout.write` to stderr as early as possible — immediately a
 | `create-person` | Create a new person. Accepts organization by name or ID. |
 | `update-person` | Update an existing person by ID. Same field format as create-person. |
 | `delete-person` | Delete a person by ID. Requires two-step confirmation. |
-| `search-persons` | Find persons by keyword. Returns summary shape. |
+| `search-persons` | Find persons by keyword across name, email, phone, and custom fields. Returns summary shape. |
 
 ### Organizations (5 tools)
 
@@ -116,7 +116,7 @@ Redirect `process.stdout.write` to stderr as early as possible — immediately a
 | `get-organization` | Get a single organization by ID with all fields resolved. Returns full record. |
 | `create-organization` | Create a new organization. |
 | `update-organization` | Update an existing organization by ID. |
-| `search-organizations` | Find organizations by keyword. Returns summary shape. |
+| `search-organizations` | Find organizations by keyword across name and custom fields. Returns summary shape. |
 
 No delete — intentional. Deleting organizations cascades to linked persons and deals in Pipedrive. Too destructive for agent-initiated action. Use the Pipedrive UI for org deletion.
 
@@ -200,7 +200,7 @@ No delete — intentional. Deleting organizations cascades to linked persons and
 |-------|------|----------|-------------|
 | `status` | enum | no | `"open"`, `"won"`, `"lost"`, `"all_not_deleted"` |
 | `pipeline` | string | no | Pipeline name |
-| `stage` | string | no | Stage name |
+| `stage` | string | no | Stage name. Same disambiguation as create/update: if globally unique, pipeline is inferred; if ambiguous, error requires pipeline to be specified. |
 | `owner` | string | no | User name |
 | `person_id` | number | no | Filter by linked person |
 | `org_id` | number | no | Filter by linked organization |
@@ -278,7 +278,7 @@ No delete — intentional. Deleting organizations cascades to linked persons and
 
 At least one of `deal_id`, `person_id`, or `org_id` must be provided.
 
-**`update-note`** — `id` (number, required), `content` (string, required). Note associations (deal, person, org) cannot be changed after creation — this is a Pipedrive API limitation. To relink a note, delete and recreate it.
+**`update-note`** — `id` (number, required), `content` (string, optional), `deal_id` (number, optional), `person_id` (number, optional), `org_id` (number, optional). At least one param beyond `id` must be provided. Associations can be changed after creation — Pipedrive's PUT /notes/{id} accepts deal_id, person_id, and org_id as updatable fields.
 **`list-notes`** — filters: `deal_id`, `person_id`, `org_id`, `limit`, `cursor`
 
 ### Reference Tools
@@ -694,6 +694,17 @@ Native `fetch` (Node 20 built-in) — no HTTP client dependency.
 2. Unit test suite
 3. Integration test suite (Pipedrive sandbox)
 4. README.md covering: setup (env vars, Claude Code MCP config), available tools by category, access control configuration, troubleshooting (common errors and what they mean)
+
+---
+
+## Implementation Notes
+
+Items to address during build, not requiring spec changes:
+
+1. **refreshInFlight cleanup on rejection.** The `refreshInFlight` promise reference must be cleared on both success and rejection. Otherwise, a failed refresh leaves a rejected promise that causes all subsequent cache misses to fail immediately without retrying.
+2. **Entity resolver search result limit warning.** When Pipedrive's search returns a full page of results and no exact match is found, log a warning suggesting the match might exist beyond the first page. Extremely unlikely at BHG's data volume but prevents silent false negatives.
+3. **Block-level HTML element handling.** The HTML stripping for notes should treat all block-level elements (`<div>`, `<li>`, `<h1>`-`<h6>`, `<p>`, `<br>`) as newline boundaries. Stripping `<div>First</div><div>Second</div>` must produce `First\nSecond`, not `FirstSecond`.
+4. **Fetch timeout.** Add `AbortSignal.timeout()` to every outbound fetch call. 30 seconds for standard API calls, 10 seconds for the startup validation call. Without this, a Pipedrive outage leaves the server hanging silently.
 
 ---
 
