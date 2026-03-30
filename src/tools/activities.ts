@@ -189,8 +189,7 @@ export function createActivityTools(
             ? respData.additional_data.pagination.next_start
             : null);
         const hasMore = respData.additional_data?.pagination?.more_items_in_collection
-          ?? !!respData.additional_data?.next_cursor
-          ?? false;
+          ?? !!respData.additional_data?.next_cursor;
 
         return {
           items: summaries,
