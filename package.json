@@ -1,0 +1,36 @@
+{
+  "name": "pipedrive-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Pipedrive CRM",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:stdio": "node dist/index.js",
+    "start:sse": "node dist/index.js --transport sse",
+    "dev": "tsx src/index.ts",
+    "dev:sse": "tsx src/index.ts --transport sse",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "~1.29.0",
+    "dotenv": "^17.3.1",
+    "fastest-levenshtein": "^1.0.16",
+    "pino": "^10.3.1",
+    "striptags": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  }
+}
