@@ -514,4 +514,129 @@ describe('get-practice-pipeline handler', () => {
     expect(result.quarter.won.dealCount).toBe(2);
     expect(result.quarter.won.totalValue).toBe(55000);
   });
+
+  describe('metadata drift failures', () => {
+    it('fails when BHG Pipeline not found', async () => {
+      resolverMocks.pipelineResolver.resolvePipelineNameToId.mockImplementation(() => {
+        throw new Error("No pipeline found matching 'BHG Pipeline'");
+      });
+
+      await expect(findTool('get-practice-pipeline').handler({
+        practiceValues: ['Varicent'],
+        monthEnd: '2026-04-30', quarterEnd: '2026-06-30',
+        nextQuarterStart: '2026-07-01', nextQuarterEnd: '2026-09-30',
+        wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
+        wonQuarterStart: '2026-04-01',
+        nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
+      })).rejects.toThrow("Pipeline 'BHG Pipeline' not found");
+    });
+
+    it('fails when BHG Practices field not found', async () => {
+      resolverMocks.fieldResolver.resolveInputField.mockImplementation(() => {
+        throw new Error('Unknown field');
+      });
+
+      await expect(findTool('get-practice-pipeline').handler({
+        practiceValues: ['Varicent'],
+        monthEnd: '2026-04-30', quarterEnd: '2026-06-30',
+        nextQuarterStart: '2026-07-01', nextQuarterEnd: '2026-09-30',
+        wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
+        wonQuarterStart: '2026-04-01',
+        nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
+      })).rejects.toThrow("Custom field 'BHG Practices' not found");
+    });
+
+    it('fails when label field metadata is unavailable', async () => {
+      resolverMocks.fieldResolver.resolveOutputValue.mockImplementation((key: string, value: unknown) => {
+        if (key === 'label') throw new Error('Label field not found');
+        if (key === 'abc_bhg_practices') {
+          const map: Record<number, string> = { 10: 'Varicent', 11: 'Xactly' };
+          if (typeof value === 'number') return map[value] ?? value;
+          if (Array.isArray(value)) return value.map((v: number) => map[v] ?? v);
+        }
+        return value;
+      });
+
+      client.request.mockResolvedValueOnce(apiResponse([
+        {
+          id: 1, title: 'Deal', value: 50000, status: 'open',
+          won_time: null, expected_close_date: '2026-05-01',
+          stage_id: 10, label_ids: [42], org_name: null,
+          custom_fields: { abc_bhg_practices: 10 },
+        },
+      ]));
+      client.request.mockResolvedValueOnce(apiResponse([]));
+
+      // Label resolution failure during normalization should be a soft warning (label normalized to empty)
+      // The deal still processes — it just has no labels and enters pipeline health buckets only
+      const result = await findTool('get-practice-pipeline').handler({
+        practiceValues: ['Varicent'],
+        monthEnd: '2026-04-30', quarterEnd: '2026-06-30',
+        nextQuarterStart: '2026-07-01', nextQuarterEnd: '2026-09-30',
+        wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
+        wonQuarterStart: '2026-04-01',
+        nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
+      }) as any;
+      expect(result.totalOpenPipeline.dealCount).toBe(1);
+      expect(result.month.commit.dealCount).toBe(0); // label unresolved, no commit classification
+    });
+
+    it('fails when practice option value missing from metadata', async () => {
+      resolverMocks.fieldResolver.resolveInputValue.mockImplementation(() => {
+        throw new Error('Option not found');
+      });
+
+      await expect(findTool('get-practice-pipeline').handler({
+        practiceValues: ['Varicent'],
+        monthEnd: '2026-04-30', quarterEnd: '2026-06-30',
+        nextQuarterStart: '2026-07-01', nextQuarterEnd: '2026-09-30',
+        wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
+        wonQuarterStart: '2026-04-01',
+        nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
+      })).rejects.toThrow("BHG Practices option 'Varicent' not found in field metadata");
+    });
+  });
+
+  it('rejects invalid parameters before making API calls', async () => {
+    await expect(findTool('get-practice-pipeline').handler({
+      practiceValues: [],
+      monthEnd: '2026-04-30', quarterEnd: '2026-06-30',
+      nextQuarterStart: '2026-07-01', nextQuarterEnd: '2026-09-30',
+      wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
+      wonQuarterStart: '2026-04-01',
+      nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
+    })).rejects.toThrow('practiceValues must be a non-empty array');
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it('handles unresolvable BHG Practices option ID on a deal as hard failure', async () => {
+    client.request.mockResolvedValueOnce(apiResponse([
+      {
+        id: 99, title: 'Bad Deal', value: 10000, status: 'open',
+        won_time: null, expected_close_date: '2026-05-01',
+        stage_id: 10, label_ids: [], org_name: null,
+        custom_fields: { abc_bhg_practices: 999 }, // Unknown option ID
+      },
+    ]));
+    client.request.mockResolvedValueOnce(apiResponse([]));
+
+    // The field resolver returns the raw ID (non-string) for unknown options
+    resolverMocks.fieldResolver.resolveOutputValue.mockImplementation((key: string, value: unknown) => {
+      if (key === 'abc_bhg_practices' && value === 999) return 999; // non-string = unresolvable
+      if (key === 'abc_bhg_practices') {
+        const map: Record<number, string> = { 10: 'Varicent', 11: 'Xactly' };
+        if (typeof value === 'number') return map[value] ?? value;
+      }
+      return value;
+    });
+
+    await expect(findTool('get-practice-pipeline').handler({
+      practiceValues: ['Varicent'],
+      monthEnd: '2026-04-30', quarterEnd: '2026-06-30',
+      nextQuarterStart: '2026-07-01', nextQuarterEnd: '2026-09-30',
+      wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
+      wonQuarterStart: '2026-04-01',
+      nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
+    })).rejects.toThrow('Pipeline data configuration error');
+  });
 });
