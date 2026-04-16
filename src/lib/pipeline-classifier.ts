@@ -1,3 +1,6 @@
+import { isWonInPeriod, isClosingByDate, isClosingInWindow } from './date-utils.js';
+import type { Logger } from 'pino';
+
 export interface CanonicalDeal {
   dealId: number;
   title: string;
@@ -105,4 +108,119 @@ export function sortByCloseDate(a: CanonicalDeal, b: CanonicalDeal): number {
   if (a.expectedCloseDate && !b.expectedCloseDate) return -1;
   if (!a.expectedCloseDate && b.expectedCloseDate) return 1;
   return a.dealId - b.dealId;
+}
+
+export interface ClassificationParams {
+  monthEnd: string;
+  quarterEnd: string;
+  nextQuarterStart: string;
+  nextQuarterEnd: string;
+  wonPeriodStart: string;
+  wonPeriodEnd: string;
+  wonQuarterStart: string;
+  nextMonthEnd: string;
+  nextThreeMonthsEnd: string;
+}
+
+export interface ClassificationResult {
+  month: { won: BucketAccumulator; commit: BucketAccumulator; upside: BucketAccumulator };
+  quarter: { won: BucketAccumulator; commit: BucketAccumulator; upside: BucketAccumulator };
+  nextQuarter: { commit: BucketAccumulator; upside: BucketAccumulator };
+  totalOpenPipeline: BucketAccumulator;
+  nextMonthPipeline: BucketAccumulator;
+  nextThreeMonthsPipeline: BucketAccumulator;
+}
+
+function createEmptyResult(): ClassificationResult {
+  return {
+    month: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+    quarter: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+    nextQuarter: { commit: createEmptyBucket(), upside: createEmptyBucket() },
+    totalOpenPipeline: createEmptyBucket(),
+    nextMonthPipeline: createEmptyBucket(),
+    nextThreeMonthsPipeline: createEmptyBucket(),
+  };
+}
+
+/**
+ * Classify deals into scorecard buckets.
+ * Applies practice gate, then status-driven eligibility, then date/label predicates.
+ */
+export function classifyDeals(
+  deals: CanonicalDeal[],
+  requestedPractices: string[],
+  params: ClassificationParams,
+  logger?: Logger
+): ClassificationResult {
+  const result = createEmptyResult();
+  const practices = [...new Set(requestedPractices)];
+
+  let anomalyNullWonTime = 0;
+  let anomalyNullCloseDate = 0;
+
+  for (const deal of deals) {
+    if (!practiceMatches(deal.practiceValues, practices)) continue;
+
+    if (deal.status === 'won') {
+      if (deal.wonTime === null) {
+        anomalyNullWonTime++;
+        continue;
+      }
+      if (isWonInPeriod(deal.wonTime, params.wonPeriodStart, params.wonPeriodEnd)) {
+        addToBucket(result.month.won, deal);
+      }
+      if (isWonInPeriod(deal.wonTime, params.wonQuarterStart, params.wonPeriodEnd)) {
+        addToBucket(result.quarter.won, deal);
+      }
+    } else if (deal.status === 'open') {
+      // Track A — Pipeline Health (label-free)
+      addToBucket(result.totalOpenPipeline, deal);
+      if (isClosingByDate(deal.expectedCloseDate, params.nextMonthEnd)) {
+        addToBucket(result.nextMonthPipeline, deal);
+      }
+      if (isClosingByDate(deal.expectedCloseDate, params.nextThreeMonthsEnd)) {
+        addToBucket(result.nextThreeMonthsPipeline, deal);
+      }
+
+      // Track B — Commit/Upside (label-driven)
+      const labelClass = classifyLabel(deal.labels);
+      if (labelClass !== null) {
+        if (deal.expectedCloseDate === null) {
+          anomalyNullCloseDate++;
+          continue;
+        }
+        const bucketKey = labelClass;
+        if (isClosingByDate(deal.expectedCloseDate, params.monthEnd)) {
+          addToBucket(result.month[bucketKey], deal);
+        }
+        if (isClosingByDate(deal.expectedCloseDate, params.quarterEnd)) {
+          addToBucket(result.quarter[bucketKey], deal);
+        }
+        if (isClosingInWindow(deal.expectedCloseDate, params.nextQuarterStart, params.nextQuarterEnd)) {
+          addToBucket(result.nextQuarter[bucketKey], deal);
+        }
+      }
+    }
+  }
+
+  if (anomalyNullWonTime > 0) {
+    logger?.warn({ count: anomalyNullWonTime }, 'Won deals with null wonTime excluded from won buckets');
+  }
+  if (anomalyNullCloseDate > 0) {
+    logger?.warn({ count: anomalyNullCloseDate }, 'Open labeled deals with null expectedCloseDate excluded from dated buckets');
+  }
+
+  finalizeBucket(result.month.won, sortWonDeals);
+  finalizeBucket(result.quarter.won, sortWonDeals);
+  finalizeBucket(result.month.commit, sortByCloseDate);
+  finalizeBucket(result.month.upside, sortByCloseDate);
+  finalizeBucket(result.quarter.commit, sortByCloseDate);
+  finalizeBucket(result.quarter.upside, sortByCloseDate);
+  finalizeBucket(result.nextQuarter.commit, sortByCloseDate);
+  finalizeBucket(result.nextQuarter.upside, sortByCloseDate);
+  finalizeBucket(result.totalOpenPipeline, sortByCloseDate);
+  finalizeBucket(result.nextMonthPipeline, sortByCloseDate);
+  finalizeBucket(result.nextThreeMonthsPipeline, sortByCloseDate);
+
+  return result;
 }
