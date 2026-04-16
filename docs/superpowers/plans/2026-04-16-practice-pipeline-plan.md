@@ -727,6 +727,44 @@ describe('classifyDeals', () => {
     expect(result.totalOpenPipeline.dealCount).toBe(1);
     expect(result.totalOpenPipeline.totalValue).toBe(50000);
   });
+
+  it('returns finalized buckets: sorted, truncated, flag set', () => {
+    // Build 55 open deals with varying close dates for totalOpenPipeline
+    const deals: CanonicalDeal[] = [];
+    for (let i = 0; i < 55; i++) {
+      // Stagger close dates so sort order is verifiable
+      const day = String((i % 28) + 1).padStart(2, '0');
+      deals.push(makeDeal({
+        dealId: 100 + i,
+        value: 1000,
+        status: 'open',
+        expectedCloseDate: `2026-05-${day}`,
+        practiceValues: ['Varicent'],
+      }));
+    }
+    const result = classifyDeals(deals, ['Varicent'], baseParams);
+
+    // Totals reflect all 55 deals
+    expect(result.totalOpenPipeline.dealCount).toBe(55);
+    expect(result.totalOpenPipeline.totalValue).toBe(55000);
+
+    // Detail array truncated to 50
+    expect(result.totalOpenPipeline.deals).toHaveLength(50);
+    expect(result.totalOpenPipeline.truncated).toBe(true);
+
+    // Sorted by expectedCloseDate ascending, dealId ascending tie-breaker
+    for (let i = 1; i < result.totalOpenPipeline.deals.length; i++) {
+      const prev = result.totalOpenPipeline.deals[i - 1];
+      const curr = result.totalOpenPipeline.deals[i];
+      const prevDate = prev.expectedCloseDate ?? '\uffff';
+      const currDate = curr.expectedCloseDate ?? '\uffff';
+      if (prevDate === currDate) {
+        expect(prev.dealId).toBeLessThan(curr.dealId);
+      } else {
+        expect(prevDate <= currDate).toBe(true);
+      }
+    }
+  });
 });
 ```
 
@@ -1038,6 +1076,15 @@ describe('validateParams', () => {
       .toThrow("Unknown practice value 'Variecent'");
   });
 
+  it('rejects non-string entries in practiceValues', () => {
+    expect(() => validateParams({ ...validParams, practiceValues: [123] }))
+      .toThrow('practiceValues must contain only strings');
+    expect(() => validateParams({ ...validParams, practiceValues: [null] }))
+      .toThrow('practiceValues must contain only strings');
+    expect(() => validateParams({ ...validParams, practiceValues: ['Varicent', 42] }))
+      .toThrow('practiceValues must contain only strings');
+  });
+
   it('de-duplicates practice values', () => {
     const result = validateParams({ ...validParams, practiceValues: ['Varicent', 'Varicent'] });
     expect(result.practiceValues).toEqual(['Varicent']);
@@ -1128,6 +1175,9 @@ export function validateParams(params: Record<string, unknown>): ValidatedParams
   const rawPractices = params.practiceValues;
   if (!Array.isArray(rawPractices) || rawPractices.length === 0) {
     throw new Error('practiceValues must be a non-empty array of strings.');
+  }
+  if (!rawPractices.every((v: unknown) => typeof v === 'string')) {
+    throw new Error('practiceValues must contain only strings.');
   }
 
   // De-duplicate
@@ -1361,8 +1411,8 @@ export function normalizeDeal(
   if (status !== 'open' && status !== 'won') {
     throw new Error(`Deal ${raw.id} has unexpected status '${status}'`);
   }
-  if (typeof raw.value !== 'number' && raw.value != null) {
-    throw new Error(`Deal ${raw.id} has non-numeric value`);
+  if (typeof raw.value !== 'number') {
+    throw new Error(`Deal ${raw.id} has missing or non-numeric value`);
   }
 
   // Resolve practice values from custom_fields
@@ -1402,7 +1452,7 @@ export function normalizeDeal(
   return {
     dealId: raw.id as number,
     title: (raw.title as string) ?? '',
-    value: (raw.value as number) ?? 0, // guarded above; 0 only for null/undefined value
+    value: raw.value as number, // guarded above — always a number at this point
     status: status as 'open' | 'won',
     wonTime: raw.won_time ? String(raw.won_time) : null,
     expectedCloseDate: raw.expected_close_date ? String(raw.expected_close_date) : null,
@@ -1961,11 +2011,9 @@ export function createPracticePipelineTools(
           );
         }
 
-        // Phase 1: Fetch
-        const [rawOpenDeals, rawWonDeals] = await Promise.all([
-          fetchAllDeals(client, pipelineId, 'open', [bhgPracticesKey], logger),
-          fetchAllDeals(client, pipelineId, 'won', [bhgPracticesKey], logger),
-        ]);
+        // Phase 1: Fetch (sequential — deterministic mock ordering, trivial latency at ~150 deals)
+        const rawOpenDeals = await fetchAllDeals(client, pipelineId, 'open', [bhgPracticesKey], logger);
+        const rawWonDeals = await fetchAllDeals(client, pipelineId, 'won', [bhgPracticesKey], logger);
 
         const totalFetched = rawOpenDeals.length + rawWonDeals.length;
         if (totalFetched === 0) {
@@ -2493,7 +2541,7 @@ git commit -m "test: Tier 3 fixture parity tests against Week 16 scorecard expec
 
 **Date comparison correctness:** The date predicates rely on lexicographic string comparison of `YYYY-MM-DD` format. This works because the format is zero-padded and fixed-width. Add a comment in `date-utils.ts`: `// Relies on lexicographic ordering of YYYY-MM-DD strings. Do not change format without updating comparison logic.`
 
-**Promise.all mock ordering:** The handler uses `Promise.all` to fetch open and won deals concurrently. `Promise.all` starts both promises immediately, and `vitest`'s `mockResolvedValueOnce` resolves mocks in call order. Since the open fetch is listed first in the `Promise.all` array, it calls `client.request` first. Set up mocks in open-first order. If tests fail due to nondeterministic ordering, switch the handler to sequential `await` (open then won) — correctness matters more than parallelism at ~150 deals.
+**Sequential fetch ordering:** The handler fetches open deals first, then won deals, using sequential `await` calls. This makes mock ordering deterministic in tests (open mocks before won mocks) and costs trivial latency at ~150 deals. If the pipeline grows to thousands of deals, this can be converted to `Promise.all` with parameter-routing mock strategies.
 
 **Label field key:** The handler resolves labels via `fieldResolver.resolveOutputValue('label', id)`. Verify that `'label'` is the correct field key in the Pipedrive deal fields metadata. If the v2 API uses a different key (e.g., `'label_ids'` mapped differently), adjust during implementation.
 

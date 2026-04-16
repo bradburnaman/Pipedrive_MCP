@@ -183,7 +183,8 @@ interface BucketAccumulator {
   totalValue: number;
   dealCount: number;
 
-  // Detail collection — gated on length < 50
+  // Detail collection — all eligible deals stored during classification,
+  // then sorted + truncated to 50 by finalizeBucket() post-classification
   deals: CanonicalDeal[];
   truncated: boolean;
 }
