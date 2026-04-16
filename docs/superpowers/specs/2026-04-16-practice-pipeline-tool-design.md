@@ -289,7 +289,7 @@ The response contains two bucket result variants and contextual fields that vary
 
 ### Response Size
 
-Worst-case estimate: 11 buckets x 50 deals x ~200 bytes per `DealDetail` = ~110KB. In practice, BHG's pipeline (~150 deals) means most buckets will have far fewer than 50 deals, and total response size will typically be well under 50KB. No additional response size guard is needed beyond per-bucket truncation.
+Directional worst-case estimate: 11 buckets x 50 deals x ~200 bytes per `DealDetail` = ~110KB. This is approximate — titles and organization names vary in length, so do not treat this as a guaranteed ceiling. In practice, BHG's pipeline (~150 deals) means most buckets will have far fewer than 50 deals, and total response size will typically be well under 50KB. No additional response size guard is needed beyond per-bucket truncation for v1. If `includeDeals` is added in the future, that becomes the natural backstop for response size control.
 
 ---
 
@@ -362,7 +362,7 @@ Error messages returned to callers must be actionable but must not leak internal
 | Pipeline `"BHG Pipeline"` not found | `"Pipeline 'BHG Pipeline' not found. Check whether the pipeline was renamed or removed."` | Log available pipelines |
 | BHG Practices custom field not found | `"Custom field 'BHG Practices' not found on deal fields. Check whether the Pipedrive field was renamed or removed."` | Log available deal field labels |
 | BHG Practices option missing/renamed | `"BHG Practices option 'Varicent' not found in field metadata. Verify the field options still include the expected canonical values."` | Log available option values |
-| BHG Practices populated but option ID unresolvable on a deal | `"Deal [dealId] has an unresolvable BHG Practices value. Field metadata may be inconsistent."` | Log the raw option ID |
+| BHG Practices populated but option ID unresolvable on a deal | `"A deal has an unresolvable BHG Practices value. Field metadata may be inconsistent."` | Log the deal ID and raw option ID |
 | Label field metadata unavailable | `"Unable to resolve label field metadata for deal fields. Check Pipedrive field configuration."` | Log field resolution details |
 | Date validation failure | Parameter-specific: `"Invalid date range: wonPeriodStart (2026-04-17) is after wonPeriodEnd (2026-04-01)."` | — |
 | Unknown practice value in input | `"Unknown practice value 'X'. Valid values: Varicent, Xactly, CIQ/Emerging, Advisory, AI Product."` | — (canonical set is not sensitive) |
@@ -511,10 +511,10 @@ Verifies independent transparent pagination of both datasets.
 
 ### Metadata Drift Hard-Failure Tests
 
-- BHG Practices field missing from deal fields → clear error
-- Expected practice option value missing/renamed → clear error
-- Label field metadata unavailable → clear error
-- Pipeline `"BHG Pipeline"` resolution failure → clear error with available pipelines
+- BHG Practices field missing from deal fields → concise external error; detailed field list in internal log
+- Expected practice option value missing/renamed → concise external error; available options in internal log
+- Label field metadata unavailable → concise external error; resolution details in internal log
+- Pipeline `"BHG Pipeline"` resolution failure → concise external error; available pipelines in internal log only
 
 ---
 
@@ -522,7 +522,7 @@ Verifies independent transparent pagination of both datasets.
 
 The `createPracticePipelineTools` factory is imported in `server.ts` alongside existing tool factories. Its tools are added to `allTools` and pass through the same `isToolEnabled` access control filtering. Called with `(client, resolver, logger)`.
 
-**Authorization scope:** This tool is intended for trusted internal scorecard automation and approved operators only. It should not be exposed to general users simply because they have access to other `read`-category tools. If the access control system supports tool-level granularity in the future, this tool should have its own permission gate.
+**Authorization scope:** This tool is intended for trusted internal scorecard automation and approved operators only. It should not be exposed to general users simply because they have access to other `read`-category tools. If the current access control model is too coarse to isolate this tool from general read access, that should be flagged as a **deployment risk** during implementation — this tool is meaningfully more sensitive than generic list/search endpoints because it returns aggregated revenue pipeline data.
 
 **Expected call frequency:** The orchestrator calls this tool once per scorecard practice, typically 4 calls per weekly scorecard run. Normal usage is fewer than 10 calls per week. Significantly higher frequency suggests misconfiguration or abusive orchestration. The existing Pipedrive API rate limiting (via `PipedriveClient` rate-limit tracking) provides the underlying protection; no additional rate limiting is needed in the tool itself.
 
