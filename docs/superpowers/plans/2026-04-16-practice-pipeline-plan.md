@@ -480,23 +480,47 @@ export interface BucketAccumulator {
   totalValue: number;
   dealCount: number;
   deals: CanonicalDeal[];
+  truncated: boolean;
 }
 
 /**
  * Create a zeroed bucket accumulator.
  */
 export function createEmptyBucket(): BucketAccumulator {
-  return { totalValue: 0, dealCount: 0, deals: [] };
+  return { totalValue: 0, dealCount: 0, deals: [], truncated: false };
 }
 
+const MAX_DETAIL_DEALS = 50;
+
 /**
- * Add a deal to a bucket. Always increments aggregates.
- * All deals are stored; truncation + sorting happens at render time.
+ * Add a deal to a bucket. Always increments aggregates unconditionally.
+ * Detail array collects all eligible deals during classification.
+ * Call finalizeBucket() after classification to sort + truncate.
  */
 export function addToBucket(bucket: BucketAccumulator, deal: CanonicalDeal): void {
   bucket.totalValue += deal.value;
   bucket.dealCount += 1;
   bucket.deals.push(deal);
+}
+
+/**
+ * Sort deals and truncate to MAX_DETAIL_DEALS. Call once per bucket
+ * after classification is complete. Totals are never affected.
+ *
+ * Memory note: at ~150 deals with cross-bucket duplication factor ~3-4x,
+ * worst case is ~600 deal references across all buckets. These are
+ * references to the same CanonicalDeal objects, not copies. Acceptable
+ * for current volume; revisit if pipeline exceeds ~1000 deals.
+ */
+export function finalizeBucket(
+  bucket: BucketAccumulator,
+  sortFn: (a: CanonicalDeal, b: CanonicalDeal) => number
+): void {
+  bucket.deals.sort(sortFn);
+  if (bucket.deals.length > MAX_DETAIL_DEALS) {
+    bucket.deals.length = MAX_DETAIL_DEALS; // truncate in place
+    bucket.truncated = true;
+  }
 }
 ```
 
@@ -590,10 +614,11 @@ describe('classifyDeals', () => {
       practiceValues: ['Varicent'],
     })];
     const result = classifyDeals(deals, ['Varicent'], baseParams);
-    expect(result.nextQuarter.upside.totalValue).toBe(80000);
+    expect(result.nextQuarter.upside.totalValue).toBe(80000); // 08-15 in [07-01, 09-30]
     expect(result.month.upside.totalValue).toBe(0); // 08-15 > monthEnd 04-30
     expect(result.totalOpenPipeline.totalValue).toBe(80000);
-    expect(result.nextThreeMonthsPipeline.totalValue).toBe(80000); // 08-15 > 07-31? No! 08-15 > 07-31, so NOT included
+    // 08-15 > nextThreeMonthsEnd 07-31, so NOT included in nextThreeMonths
+    expect(result.nextThreeMonthsPipeline.totalValue).toBe(0);
   });
 
   it('excludes deals that do not match requested practices', () => {
@@ -824,6 +849,19 @@ export function classifyDeals(
   if (anomalyNullCloseDate > 0) {
     logger?.warn({ count: anomalyNullCloseDate }, 'Open labeled deals with null expectedCloseDate excluded from dated buckets');
   }
+
+  // Finalize: sort + truncate each bucket (post-classification, pre-render)
+  finalizeBucket(result.month.won, sortWonDeals);
+  finalizeBucket(result.quarter.won, sortWonDeals);
+  finalizeBucket(result.month.commit, sortByCloseDate);
+  finalizeBucket(result.month.upside, sortByCloseDate);
+  finalizeBucket(result.quarter.commit, sortByCloseDate);
+  finalizeBucket(result.quarter.upside, sortByCloseDate);
+  finalizeBucket(result.nextQuarter.commit, sortByCloseDate);
+  finalizeBucket(result.nextQuarter.upside, sortByCloseDate);
+  finalizeBucket(result.totalOpenPipeline, sortByCloseDate);
+  finalizeBucket(result.nextMonthPipeline, sortByCloseDate);
+  finalizeBucket(result.nextThreeMonthsPipeline, sortByCloseDate);
 
   return result;
 }
@@ -1315,6 +1353,18 @@ export function normalizeDeal(
   bhgPracticesKey: string,
   logger?: Logger
 ): CanonicalDeal {
+  // Defensive guards on API response shape
+  if (typeof raw.id !== 'number') {
+    throw new Error(`Deal missing numeric id`);
+  }
+  const status = raw.status as string;
+  if (status !== 'open' && status !== 'won') {
+    throw new Error(`Deal ${raw.id} has unexpected status '${status}'`);
+  }
+  if (typeof raw.value !== 'number' && raw.value != null) {
+    throw new Error(`Deal ${raw.id} has non-numeric value`);
+  }
+
   // Resolve practice values from custom_fields
   const customFields = (raw.custom_fields ?? {}) as Record<string, unknown>;
   const rawPractice = customFields[bhgPracticesKey];
@@ -1352,8 +1402,8 @@ export function normalizeDeal(
   return {
     dealId: raw.id as number,
     title: (raw.title as string) ?? '',
-    value: (raw.value as number) ?? 0,
-    status: raw.status as 'open' | 'won',
+    value: (raw.value as number) ?? 0, // guarded above; 0 only for null/undefined value
+    status: status as 'open' | 'won',
     wonTime: raw.won_time ? String(raw.won_time) : null,
     expectedCloseDate: raw.expected_close_date ? String(raw.expected_close_date) : null,
     stage: raw.stage_id ? pipelineResolver.resolveStageIdToName(raw.stage_id as number) : '',
@@ -1452,7 +1502,7 @@ describe('renderResponse', () => {
     expect(response.month.commit.deals[0].wonTime).toBeUndefined();
   });
 
-  it('truncates at 50 deals with truncated flag', () => {
+  it('renders truncated bucket (already finalized by classifier)', () => {
     const result: ClassificationResult = {
       month: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
       quarter: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
@@ -1464,6 +1514,9 @@ describe('renderResponse', () => {
     for (let i = 0; i < 55; i++) {
       addToBucket(result.totalOpenPipeline, makeDeal({ dealId: i, value: 1000, expectedCloseDate: '2026-05-01' }));
     }
+    // Simulate finalizeBucket (normally called by classifyDeals)
+    result.totalOpenPipeline.deals.length = 50;
+    result.totalOpenPipeline.truncated = true;
     const response = renderResponse(result, ['Varicent'], '2026-05-31', '2026-07-31');
     expect(response.totalOpenPipeline.deals).toHaveLength(50);
     expect(response.totalOpenPipeline.truncated).toBe(true);
@@ -1483,6 +1536,7 @@ describe('renderResponse', () => {
     for (let i = 0; i < 50; i++) {
       addToBucket(result.totalOpenPipeline, makeDeal({ dealId: i, value: 1000 }));
     }
+    // 50 deals — no truncation after finalize
     const response = renderResponse(result, ['Varicent'], '2026-05-31', '2026-07-31');
     expect(response.totalOpenPipeline.deals).toHaveLength(50);
     expect(response.totalOpenPipeline.truncated).toBeUndefined();
@@ -1501,9 +1555,6 @@ Add to `src/tools/practice-pipeline.ts`:
 
 ```typescript
 import type { ClassificationResult, BucketAccumulator } from '../lib/pipeline-classifier.js';
-import { sortWonDeals, sortByCloseDate } from '../lib/pipeline-classifier.js';
-
-const MAX_DETAIL_DEALS = 50;
 
 interface DealDetail {
   dealId: number;
@@ -1527,14 +1578,16 @@ interface PipelineHealthBucketResult extends BucketResult {
   periodEnd: string;
 }
 
+/**
+ * Render a finalized bucket into the response shape.
+ * Buckets are already sorted + truncated by finalizeBucket() in the classifier.
+ * This function only maps CanonicalDeal → DealDetail and selects the contextual date field.
+ */
 function renderBucket(
   bucket: BucketAccumulator,
-  sortFn: (a: CanonicalDeal, b: CanonicalDeal) => number,
   dateField: 'wonTime' | 'expectedCloseDate'
 ): BucketResult {
-  const sorted = [...bucket.deals].sort(sortFn);
-  const truncated = sorted.length > MAX_DETAIL_DEALS;
-  const deals: DealDetail[] = sorted.slice(0, MAX_DETAIL_DEALS).map(d => {
+  const deals: DealDetail[] = bucket.deals.map(d => {
     const detail: DealDetail = {
       dealId: d.dealId,
       title: d.title,
@@ -1554,7 +1607,7 @@ function renderBucket(
     totalValue: bucket.totalValue,
     dealCount: bucket.dealCount,
     deals,
-    ...(truncated ? { truncated: true } : {}),
+    ...(bucket.truncated ? { truncated: true } : {}),
   };
 }
 
@@ -1571,26 +1624,26 @@ export function renderResponse(
     practiceValues,
     pipeline: 'BHG Pipeline',
     month: {
-      won: renderBucket(result.month.won, sortWonDeals, 'wonTime'),
-      commit: renderBucket(result.month.commit, sortByCloseDate, 'expectedCloseDate'),
-      upside: renderBucket(result.month.upside, sortByCloseDate, 'expectedCloseDate'),
+      won: renderBucket(result.month.won, 'wonTime'),
+      commit: renderBucket(result.month.commit, 'expectedCloseDate'),
+      upside: renderBucket(result.month.upside, 'expectedCloseDate'),
     },
     quarter: {
-      won: renderBucket(result.quarter.won, sortWonDeals, 'wonTime'),
-      commit: renderBucket(result.quarter.commit, sortByCloseDate, 'expectedCloseDate'),
-      upside: renderBucket(result.quarter.upside, sortByCloseDate, 'expectedCloseDate'),
+      won: renderBucket(result.quarter.won, 'wonTime'),
+      commit: renderBucket(result.quarter.commit, 'expectedCloseDate'),
+      upside: renderBucket(result.quarter.upside, 'expectedCloseDate'),
     },
     nextQuarter: {
-      commit: renderBucket(result.nextQuarter.commit, sortByCloseDate, 'expectedCloseDate'),
-      upside: renderBucket(result.nextQuarter.upside, sortByCloseDate, 'expectedCloseDate'),
+      commit: renderBucket(result.nextQuarter.commit, 'expectedCloseDate'),
+      upside: renderBucket(result.nextQuarter.upside, 'expectedCloseDate'),
     },
-    totalOpenPipeline: renderBucket(result.totalOpenPipeline, sortByCloseDate, 'expectedCloseDate'),
+    totalOpenPipeline: renderBucket(result.totalOpenPipeline, 'expectedCloseDate'),
     nextMonthPipeline: {
-      ...renderBucket(result.nextMonthPipeline, sortByCloseDate, 'expectedCloseDate'),
+      ...renderBucket(result.nextMonthPipeline, 'expectedCloseDate'),
       periodEnd: nextMonthEnd,
     },
     nextThreeMonthsPipeline: {
-      ...renderBucket(result.nextThreeMonthsPipeline, sortByCloseDate, 'expectedCloseDate'),
+      ...renderBucket(result.nextThreeMonthsPipeline, 'expectedCloseDate'),
       periodEnd: nextThreeMonthsEnd,
     },
   };
@@ -1920,9 +1973,19 @@ export function createPracticePipelineTools(
         }
 
         // Phase 2: Normalize
+        // Normalization errors (e.g., unresolvable BHG Practices option ID) are caught
+        // and re-thrown with a generic external message. Detail goes to logs only.
         const allDeals: CanonicalDeal[] = [];
         for (const raw of [...rawOpenDeals, ...rawWonDeals]) {
-          allDeals.push(normalizeDeal(raw, fieldResolver, pipelineResolver, bhgPracticesKey, logger));
+          try {
+            allDeals.push(normalizeDeal(raw, fieldResolver, pipelineResolver, bhgPracticesKey, logger));
+          } catch (err) {
+            logger?.error({ dealId: (raw as any).id, error: (err as Error).message },
+              'Deal normalization failed');
+            throw new Error(
+              'Pipeline data configuration error. Check Pipedrive field setup.'
+            );
+          }
         }
 
         // Phase 3: Classify
@@ -2423,6 +2486,12 @@ git commit -m "test: Tier 3 fixture parity tests against Week 16 scorecard expec
 ---
 
 ## Execution Notes
+
+**Failure model:** This tool uses fail-hard semantics — any normalization error, metadata inconsistency, or API failure aborts the entire tool call. No partial results are returned. This is intentional for scorecard automation where partial data is worse than no data. Document this in the tool description if not already clear.
+
+**Rate limiting across pagination:** The `fetchAllDeals` loop relies on the existing `normalizeApiCall` retry/backoff for 429 responses. No additional pacing is needed between pages because `normalizeApiCall` already handles rate-limit headers and waits for the reset window. If the pipeline grows significantly, the existing retry logic handles throttling transparently.
+
+**Date comparison correctness:** The date predicates rely on lexicographic string comparison of `YYYY-MM-DD` format. This works because the format is zero-padded and fixed-width. Add a comment in `date-utils.ts`: `// Relies on lexicographic ordering of YYYY-MM-DD strings. Do not change format without updating comparison logic.`
 
 **Promise.all mock ordering:** The handler uses `Promise.all` to fetch open and won deals concurrently. `Promise.all` starts both promises immediately, and `vitest`'s `mockResolvedValueOnce` resolves mocks in call order. Since the open fetch is listed first in the `Promise.all` array, it calls `client.request` first. Set up mocks in open-first order. If tests fail due to nondeterministic ordering, switch the handler to sequential `await` (open then won) — correctness matters more than parallelism at ~150 deals.
 

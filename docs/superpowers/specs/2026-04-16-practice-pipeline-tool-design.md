@@ -189,11 +189,11 @@ interface BucketAccumulator {
 }
 ```
 
-The `addToBucket` operation:
-1. **Always** increments `totalValue += deal.value` and `dealCount += 1`
-2. **Conditionally** appends to `deals` only if `deals.length < 50`, otherwise sets `truncated = true`
+The `addToBucket` operation always increments `totalValue` and `dealCount`, and always appends the deal to the detail array.
 
-These two concerns are unconditionally separate. Totals are never affected by truncation.
+After classification completes, each bucket is finalized: deals are sorted (bucket-local) and truncated to 50 with a `truncated` flag. Totals and counts reflect the full dataset unconditionally — they are never affected by truncation.
+
+Memory note: at ~150 deals with cross-bucket duplication factor ~3-4x, worst case is ~600 deal references across all buckets. These are references to the same CanonicalDeal objects, not copies. Acceptable for current volume.
 
 #### Stable Ordering Before Truncation
 
