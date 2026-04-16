@@ -452,4 +452,66 @@ describe('get-practice-pipeline handler', () => {
     expect(result.totalOpenPipeline.dealCount).toBe(0);
     expect(result.month.won.totalValue).toBe(0);
   });
+
+  it('paginates open deals across two pages', async () => {
+    // Page 1 of open deals — has next_cursor
+    client.request.mockResolvedValueOnce(apiResponse(
+      [{ id: 1, title: 'A', value: 50000, status: 'open', won_time: null, expected_close_date: '2026-05-01',
+         stage_id: 10, label_ids: [42], org_name: 'X', custom_fields: { abc_bhg_practices: 10 } }],
+      { next_cursor: 'page2cursor' }
+    ));
+    // Page 2 of open deals — no next_cursor
+    client.request.mockResolvedValueOnce(apiResponse(
+      [{ id: 2, title: 'B', value: 75000, status: 'open', won_time: null, expected_close_date: '2026-05-15',
+         stage_id: 11, label_ids: [42], org_name: 'Y', custom_fields: { abc_bhg_practices: 10 } }]
+    ));
+    // Won deals — single page
+    client.request.mockResolvedValueOnce(apiResponse([]));
+
+    const result = await findTool('get-practice-pipeline').handler({
+      practiceValues: ['Varicent'],
+      monthEnd: '2026-04-30', quarterEnd: '2026-06-30',
+      nextQuarterStart: '2026-07-01', nextQuarterEnd: '2026-09-30',
+      wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
+      wonQuarterStart: '2026-04-01',
+      nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
+    }) as any;
+
+    // Both open deals should be included
+    expect(result.totalOpenPipeline.dealCount).toBe(2);
+    expect(result.totalOpenPipeline.totalValue).toBe(125000);
+    // Verify cursor was passed on second call
+    expect(client.request).toHaveBeenCalledTimes(3); // 2 open pages + 1 won page
+    expect(client.request.mock.calls[1][4].cursor).toBe('page2cursor');
+  });
+
+  it('paginates won deals across two pages', async () => {
+    // Open deals — single page
+    client.request.mockResolvedValueOnce(apiResponse([]));
+    // Page 1 of won deals — has next_cursor
+    client.request.mockResolvedValueOnce(apiResponse(
+      [{ id: 1, title: 'Won A', value: 25000, status: 'won', won_time: '2026-04-05T10:00:00Z',
+         expected_close_date: '2026-04-01', stage_id: 12, label_ids: [],
+         org_name: 'X', custom_fields: { abc_bhg_practices: 10 } }],
+      { next_cursor: 'wonpage2' }
+    ));
+    // Page 2 of won deals — no next_cursor
+    client.request.mockResolvedValueOnce(apiResponse(
+      [{ id: 2, title: 'Won B', value: 30000, status: 'won', won_time: '2026-04-12T10:00:00Z',
+         expected_close_date: '2026-04-10', stage_id: 12, label_ids: [],
+         org_name: 'Y', custom_fields: { abc_bhg_practices: 10 } }]
+    ));
+
+    const result = await findTool('get-practice-pipeline').handler({
+      practiceValues: ['Varicent'],
+      monthEnd: '2026-04-30', quarterEnd: '2026-06-30',
+      nextQuarterStart: '2026-07-01', nextQuarterEnd: '2026-09-30',
+      wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
+      wonQuarterStart: '2026-04-01',
+      nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
+    }) as any;
+
+    expect(result.quarter.won.dealCount).toBe(2);
+    expect(result.quarter.won.totalValue).toBe(55000);
+  });
 });
