@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { classifyLabel, practiceMatches } from '../../src/lib/pipeline-classifier.js';
 import { createEmptyBucket, addToBucket } from '../../src/lib/pipeline-classifier.js';
+import { sortWonDeals, sortByCloseDate } from '../../src/lib/pipeline-classifier.js';
 import type { CanonicalDeal } from '../../src/lib/pipeline-classifier.js';
 
 function makeDeal(overrides: Partial<CanonicalDeal> = {}): CanonicalDeal {
@@ -98,5 +99,56 @@ describe('bucket accumulator', () => {
     expect(bucket.totalValue).toBe(60000);
     expect(bucket.dealCount).toBe(60);
     expect(bucket.deals).toHaveLength(60); // all stored; truncation is in render
+  });
+});
+
+describe('sortWonDeals', () => {
+  it('sorts by wonTime descending (most recent first)', () => {
+    const deals = [
+      makeDeal({ dealId: 1, wonTime: '2026-04-05T10:00:00Z' }),
+      makeDeal({ dealId: 2, wonTime: '2026-04-15T10:00:00Z' }),
+      makeDeal({ dealId: 3, wonTime: '2026-04-10T10:00:00Z' }),
+    ];
+    const sorted = [...deals].sort(sortWonDeals);
+    expect(sorted.map(d => d.dealId)).toEqual([2, 3, 1]);
+  });
+
+  it('uses dealId ascending as tie-breaker for same wonTime', () => {
+    const deals = [
+      makeDeal({ dealId: 5, wonTime: '2026-04-10T10:00:00Z' }),
+      makeDeal({ dealId: 2, wonTime: '2026-04-10T10:00:00Z' }),
+    ];
+    const sorted = [...deals].sort(sortWonDeals);
+    expect(sorted.map(d => d.dealId)).toEqual([2, 5]);
+  });
+});
+
+describe('sortByCloseDate', () => {
+  it('sorts by expectedCloseDate ascending (soonest first)', () => {
+    const deals = [
+      makeDeal({ dealId: 1, expectedCloseDate: '2026-06-15' }),
+      makeDeal({ dealId: 2, expectedCloseDate: '2026-04-01' }),
+      makeDeal({ dealId: 3, expectedCloseDate: '2026-05-10' }),
+    ];
+    const sorted = [...deals].sort(sortByCloseDate);
+    expect(sorted.map(d => d.dealId)).toEqual([2, 3, 1]);
+  });
+
+  it('puts null expectedCloseDate last', () => {
+    const deals = [
+      makeDeal({ dealId: 1, expectedCloseDate: null }),
+      makeDeal({ dealId: 2, expectedCloseDate: '2026-05-10' }),
+    ];
+    const sorted = [...deals].sort(sortByCloseDate);
+    expect(sorted.map(d => d.dealId)).toEqual([2, 1]);
+  });
+
+  it('uses dealId ascending as tie-breaker for same date', () => {
+    const deals = [
+      makeDeal({ dealId: 7, expectedCloseDate: '2026-05-10' }),
+      makeDeal({ dealId: 3, expectedCloseDate: '2026-05-10' }),
+    ];
+    const sorted = [...deals].sort(sortByCloseDate);
+    expect(sorted.map(d => d.dealId)).toEqual([3, 7]);
   });
 });

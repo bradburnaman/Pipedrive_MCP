@@ -80,3 +80,29 @@ export function finalizeBucket(
     bucket.truncated = true;
   }
 }
+
+/**
+ * Sort won deals: wonTime descending (most recent first), dealId ascending tie-breaker.
+ */
+export function sortWonDeals(a: CanonicalDeal, b: CanonicalDeal): number {
+  if (a.wonTime && b.wonTime) {
+    if (a.wonTime > b.wonTime) return -1;
+    if (a.wonTime < b.wonTime) return 1;
+  }
+  if (a.wonTime && !b.wonTime) return -1;
+  if (!a.wonTime && b.wonTime) return 1;
+  return a.dealId - b.dealId;
+}
+
+/**
+ * Sort by expectedCloseDate ascending (soonest first), nulls last, dealId ascending tie-breaker.
+ */
+export function sortByCloseDate(a: CanonicalDeal, b: CanonicalDeal): number {
+  if (a.expectedCloseDate && b.expectedCloseDate) {
+    if (a.expectedCloseDate < b.expectedCloseDate) return -1;
+    if (a.expectedCloseDate > b.expectedCloseDate) return 1;
+  }
+  if (a.expectedCloseDate && !b.expectedCloseDate) return -1;
+  if (!a.expectedCloseDate && b.expectedCloseDate) return 1;
+  return a.dealId - b.dealId;
+}
