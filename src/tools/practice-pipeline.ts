@@ -4,7 +4,7 @@ import type { PipedriveClient } from '../lib/pipedrive-client.js';
 import { normalizeApiCall } from '../lib/error-normalizer.js';
 import { parseStrictDate } from '../lib/date-utils.js';
 import type { Logger } from 'pino';
-import type { CanonicalDeal } from '../lib/pipeline-classifier.js';
+import type { CanonicalDeal, ClassificationResult, BucketAccumulator } from '../lib/pipeline-classifier.js';
 
 const CANONICAL_PRACTICES = ['Varicent', 'Xactly', 'CIQ/Emerging', 'Advisory', 'AI Product'] as const;
 const BHG_PRACTICES_FIELD_LABEL = 'BHG Practices';
@@ -164,5 +164,98 @@ export function normalizeDeal(
     labels,
     organization: (raw.org_name as string) ?? null,
     practiceValues,
+  };
+}
+
+interface DealDetail {
+  dealId: number;
+  title: string;
+  value: number;
+  wonTime?: string;
+  expectedCloseDate?: string;
+  stage: string;
+  labels: string[];
+  organization: string | null;
+}
+
+interface BucketResult {
+  totalValue: number;
+  dealCount: number;
+  deals: DealDetail[];
+  truncated?: boolean;
+}
+
+interface PipelineHealthBucketResult extends BucketResult {
+  periodEnd: string;
+}
+
+/**
+ * Render a finalized bucket into the response shape.
+ * Buckets are already sorted + truncated by finalizeBucket() in the classifier.
+ * This function only maps CanonicalDeal → DealDetail and selects the contextual date field.
+ */
+function renderBucket(
+  bucket: BucketAccumulator,
+  dateField: 'wonTime' | 'expectedCloseDate'
+): BucketResult {
+  const deals: DealDetail[] = bucket.deals.map(d => {
+    const detail: DealDetail = {
+      dealId: d.dealId,
+      title: d.title,
+      value: d.value,
+      stage: d.stage,
+      labels: d.labels,
+      organization: d.organization,
+    };
+    if (dateField === 'wonTime') {
+      detail.wonTime = d.wonTime ?? undefined;
+    } else {
+      detail.expectedCloseDate = d.expectedCloseDate ?? undefined;
+    }
+    return detail;
+  });
+  return {
+    totalValue: bucket.totalValue,
+    dealCount: bucket.dealCount,
+    deals,
+    ...(bucket.truncated ? { truncated: true } : {}),
+  };
+}
+
+/**
+ * Transform ClassificationResult into the final API response shape.
+ */
+export function renderResponse(
+  result: ClassificationResult,
+  practiceValues: string[],
+  nextMonthEnd: string,
+  nextThreeMonthsEnd: string
+): Record<string, unknown> {
+  return {
+    practiceValues,
+    pipeline: 'BHG Pipeline',
+    month: {
+      won: renderBucket(result.month.won, 'wonTime'),
+      commit: renderBucket(result.month.commit, 'expectedCloseDate'),
+      upside: renderBucket(result.month.upside, 'expectedCloseDate'),
+    },
+    quarter: {
+      won: renderBucket(result.quarter.won, 'wonTime'),
+      commit: renderBucket(result.quarter.commit, 'expectedCloseDate'),
+      upside: renderBucket(result.quarter.upside, 'expectedCloseDate'),
+    },
+    nextQuarter: {
+      commit: renderBucket(result.nextQuarter.commit, 'expectedCloseDate'),
+      upside: renderBucket(result.nextQuarter.upside, 'expectedCloseDate'),
+    },
+    totalOpenPipeline: renderBucket(result.totalOpenPipeline, 'expectedCloseDate'),
+    nextMonthPipeline: {
+      ...renderBucket(result.nextMonthPipeline, 'expectedCloseDate'),
+      periodEnd: nextMonthEnd,
+    },
+    nextThreeMonthsPipeline: {
+      ...renderBucket(result.nextThreeMonthsPipeline, 'expectedCloseDate'),
+      periodEnd: nextThreeMonthsEnd,
+    },
   };
 }

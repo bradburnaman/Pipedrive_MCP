@@ -194,3 +194,105 @@ describe('normalizeDeal', () => {
     expect(result.expectedCloseDate).toBeNull();
   });
 });
+
+import { renderResponse } from '../../src/tools/practice-pipeline.js';
+import type { ClassificationResult } from '../../src/lib/pipeline-classifier.js';
+import { createEmptyBucket, addToBucket } from '../../src/lib/pipeline-classifier.js';
+import type { CanonicalDeal } from '../../src/lib/pipeline-classifier.js';
+
+function makeDeal(overrides: Partial<CanonicalDeal> = {}): CanonicalDeal {
+  return {
+    dealId: 1, title: 'Test', value: 50000, status: 'open',
+    wonTime: null, expectedCloseDate: '2026-05-15', stage: 'Qualified',
+    labels: [], organization: 'Acme', practiceValues: ['Varicent'],
+    ...overrides,
+  };
+}
+
+describe('renderResponse', () => {
+  it('renders empty classification result', () => {
+    const result: ClassificationResult = {
+      month: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      quarter: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      nextQuarter: { commit: createEmptyBucket(), upside: createEmptyBucket() },
+      totalOpenPipeline: createEmptyBucket(),
+      nextMonthPipeline: createEmptyBucket(),
+      nextThreeMonthsPipeline: createEmptyBucket(),
+    };
+    const response = renderResponse(result, ['Varicent'], '2026-05-31', '2026-07-31');
+    expect(response.practiceValues).toEqual(['Varicent']);
+    expect(response.pipeline).toBe('BHG Pipeline');
+    expect(response.month.won.totalValue).toBe(0);
+    expect(response.month.won.deals).toEqual([]);
+    expect(response.nextMonthPipeline.periodEnd).toBe('2026-05-31');
+    expect(response.nextThreeMonthsPipeline.periodEnd).toBe('2026-07-31');
+  });
+
+  it('includes wonTime in won bucket deal details', () => {
+    const result: ClassificationResult = {
+      month: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      quarter: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      nextQuarter: { commit: createEmptyBucket(), upside: createEmptyBucket() },
+      totalOpenPipeline: createEmptyBucket(),
+      nextMonthPipeline: createEmptyBucket(),
+      nextThreeMonthsPipeline: createEmptyBucket(),
+    };
+    addToBucket(result.month.won, makeDeal({ dealId: 1, status: 'won', wonTime: '2026-04-10T14:00:00Z' }));
+    const response = renderResponse(result, ['Varicent'], '2026-05-31', '2026-07-31');
+    expect(response.month.won.deals[0].wonTime).toBe('2026-04-10T14:00:00Z');
+    expect(response.month.won.deals[0].expectedCloseDate).toBeUndefined();
+  });
+
+  it('includes expectedCloseDate in commit bucket deal details', () => {
+    const result: ClassificationResult = {
+      month: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      quarter: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      nextQuarter: { commit: createEmptyBucket(), upside: createEmptyBucket() },
+      totalOpenPipeline: createEmptyBucket(),
+      nextMonthPipeline: createEmptyBucket(),
+      nextThreeMonthsPipeline: createEmptyBucket(),
+    };
+    addToBucket(result.month.commit, makeDeal({ dealId: 2, expectedCloseDate: '2026-04-20', labels: ['Commit'] }));
+    const response = renderResponse(result, ['Varicent'], '2026-05-31', '2026-07-31');
+    expect(response.month.commit.deals[0].expectedCloseDate).toBe('2026-04-20');
+    expect(response.month.commit.deals[0].wonTime).toBeUndefined();
+  });
+
+  it('renders truncated bucket (already finalized by classifier)', () => {
+    const result: ClassificationResult = {
+      month: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      quarter: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      nextQuarter: { commit: createEmptyBucket(), upside: createEmptyBucket() },
+      totalOpenPipeline: createEmptyBucket(),
+      nextMonthPipeline: createEmptyBucket(),
+      nextThreeMonthsPipeline: createEmptyBucket(),
+    };
+    for (let i = 0; i < 55; i++) {
+      addToBucket(result.totalOpenPipeline, makeDeal({ dealId: i, value: 1000, expectedCloseDate: '2026-05-01' }));
+    }
+    result.totalOpenPipeline.deals.length = 50;
+    result.totalOpenPipeline.truncated = true;
+    const response = renderResponse(result, ['Varicent'], '2026-05-31', '2026-07-31');
+    expect(response.totalOpenPipeline.deals).toHaveLength(50);
+    expect(response.totalOpenPipeline.truncated).toBe(true);
+    expect(response.totalOpenPipeline.totalValue).toBe(55000);
+    expect(response.totalOpenPipeline.dealCount).toBe(55);
+  });
+
+  it('omits truncated when exactly 50 deals', () => {
+    const result: ClassificationResult = {
+      month: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      quarter: { won: createEmptyBucket(), commit: createEmptyBucket(), upside: createEmptyBucket() },
+      nextQuarter: { commit: createEmptyBucket(), upside: createEmptyBucket() },
+      totalOpenPipeline: createEmptyBucket(),
+      nextMonthPipeline: createEmptyBucket(),
+      nextThreeMonthsPipeline: createEmptyBucket(),
+    };
+    for (let i = 0; i < 50; i++) {
+      addToBucket(result.totalOpenPipeline, makeDeal({ dealId: i, value: 1000 }));
+    }
+    const response = renderResponse(result, ['Varicent'], '2026-05-31', '2026-07-31');
+    expect(response.totalOpenPipeline.deals).toHaveLength(50);
+    expect(response.totalOpenPipeline.truncated).toBeUndefined();
+  });
+});
