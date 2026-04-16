@@ -5,6 +5,7 @@ import { normalizeApiCall } from '../lib/error-normalizer.js';
 import { parseStrictDate } from '../lib/date-utils.js';
 import type { Logger } from 'pino';
 import type { CanonicalDeal, ClassificationResult, BucketAccumulator } from '../lib/pipeline-classifier.js';
+import { classifyDeals } from '../lib/pipeline-classifier.js';
 
 const CANONICAL_PRACTICES = ['Varicent', 'Xactly', 'CIQ/Emerging', 'Advisory', 'AI Product'] as const;
 const BHG_PRACTICES_FIELD_LABEL = 'BHG Practices';
@@ -258,4 +259,160 @@ export function renderResponse(
       periodEnd: nextThreeMonthsEnd,
     },
   };
+}
+
+/**
+ * Paginate through all deals for a given pipeline + status.
+ * Continues until the API provides no next cursor.
+ */
+async function fetchAllDeals(
+  client: PipedriveClient,
+  pipelineId: number,
+  status: string,
+  customFieldKeys: string[],
+  logger?: Logger
+): Promise<Record<string, unknown>[]> {
+  const allDeals: Record<string, unknown>[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const queryParams: Record<string, string> = {
+      pipeline_id: String(pipelineId),
+      status,
+      limit: '500',
+    };
+    if (customFieldKeys.length > 0) {
+      queryParams.custom_fields = customFieldKeys.join(',');
+    }
+    if (cursor) {
+      queryParams.cursor = cursor;
+    }
+
+    const response = await normalizeApiCall(
+      async () => client.request('GET', 'v2', '/deals', undefined, queryParams),
+      undefined, logger
+    );
+
+    const respData = (response as any).data;
+    const items = Array.isArray(respData.data) ? respData.data : [];
+    allDeals.push(...items);
+
+    cursor = respData.additional_data?.next_cursor ?? undefined;
+  } while (cursor);
+
+  return allDeals;
+}
+
+export function createPracticePipelineTools(
+  client: PipedriveClient,
+  resolver: ReferenceResolver,
+  logger?: Logger
+): ToolDefinition[] {
+  return [
+    {
+      name: 'get-practice-pipeline',
+      category: 'read' as const,
+      description: 'Returns a practice-level pipeline summary for BHG Pipeline scorecard automation. Aggregates won, committed, upside, and pipeline health metrics by time period for the specified BHG Practices values. Not a general-purpose deal query tool.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          practiceValues: {
+            type: 'array',
+            items: { type: 'string', enum: [...CANONICAL_PRACTICES] },
+            minItems: 1,
+            description: 'BHG Practices values to include. Valid: Varicent, Xactly, CIQ/Emerging, Advisory, AI Product.',
+          },
+          monthEnd: { type: 'string', description: 'Ceiling for month commit/upside (YYYY-MM-DD)' },
+          quarterEnd: { type: 'string', description: 'Ceiling for quarter commit/upside (YYYY-MM-DD)' },
+          nextQuarterStart: { type: 'string', description: 'Floor for next-quarter commit/upside (YYYY-MM-DD)' },
+          nextQuarterEnd: { type: 'string', description: 'Ceiling for next-quarter commit/upside (YYYY-MM-DD)' },
+          wonPeriodStart: { type: 'string', description: 'Start of month won window (YYYY-MM-DD)' },
+          wonPeriodEnd: { type: 'string', description: 'End of won windows — month and quarter (YYYY-MM-DD)' },
+          wonQuarterStart: { type: 'string', description: 'Start of quarter won window (YYYY-MM-DD)' },
+          nextMonthEnd: { type: 'string', description: 'Ceiling for next-month pipeline health (YYYY-MM-DD)' },
+          nextThreeMonthsEnd: { type: 'string', description: 'Ceiling for next-three-months pipeline health (YYYY-MM-DD)' },
+        },
+        required: [
+          'practiceValues', 'monthEnd', 'quarterEnd', 'nextQuarterStart', 'nextQuarterEnd',
+          'wonPeriodStart', 'wonPeriodEnd', 'wonQuarterStart', 'nextMonthEnd', 'nextThreeMonthsEnd',
+        ],
+      },
+      handler: async (params: Record<string, unknown>) => {
+        // Phase 0: Validate
+        const validated = validateParams(params);
+
+        // Resolve field + pipeline metadata (cached, no API calls)
+        const fieldResolver = await resolver.getFieldResolver('deal');
+        const pipelineResolver = await resolver.getPipelineResolver();
+
+        // Resolve BHG Practices field key
+        let bhgPracticesKey: string;
+        try {
+          bhgPracticesKey = fieldResolver.resolveInputField(BHG_PRACTICES_FIELD_LABEL);
+        } catch {
+          throw new Error(
+            `Custom field '${BHG_PRACTICES_FIELD_LABEL}' not found on deal fields. Check whether the Pipedrive field was renamed or removed.`
+          );
+        }
+
+        // Verify requested practice option values exist in metadata
+        for (const practice of validated.practiceValues) {
+          try {
+            fieldResolver.resolveInputValue(bhgPracticesKey, practice);
+          } catch {
+            throw new Error(
+              `BHG Practices option '${practice}' not found in field metadata. Verify the field options still include the expected canonical values.`
+            );
+          }
+        }
+
+        // Resolve pipeline
+        let pipelineId: number;
+        try {
+          pipelineId = pipelineResolver.resolvePipelineNameToId(BHG_PIPELINE_NAME);
+        } catch {
+          logger?.error({ pipeline: BHG_PIPELINE_NAME }, 'Pipeline not found');
+          throw new Error(
+            `Pipeline '${BHG_PIPELINE_NAME}' not found. Check whether the pipeline was renamed or removed.`
+          );
+        }
+
+        // Phase 1: Fetch (sequential — deterministic mock ordering, trivial latency at ~150 deals)
+        const rawOpenDeals = await fetchAllDeals(client, pipelineId, 'open', [bhgPracticesKey], logger);
+        const rawWonDeals = await fetchAllDeals(client, pipelineId, 'won', [bhgPracticesKey], logger);
+
+        const totalFetched = rawOpenDeals.length + rawWonDeals.length;
+        if (totalFetched === 0) {
+          logger?.info('No deals found in BHG Pipeline with status open/won');
+        }
+
+        // Phase 2: Normalize
+        const allDeals: CanonicalDeal[] = [];
+        for (const raw of [...rawOpenDeals, ...rawWonDeals]) {
+          try {
+            allDeals.push(normalizeDeal(raw, fieldResolver, pipelineResolver, bhgPracticesKey, logger));
+          } catch (err) {
+            logger?.error({ dealId: (raw as any).id, error: (err as Error).message },
+              'Deal normalization failed');
+            throw new Error(
+              'Pipeline data configuration error. Check Pipedrive field setup.'
+            );
+          }
+        }
+
+        // Phase 3: Classify
+        const classified = classifyDeals(allDeals, validated.practiceValues, validated, logger);
+
+        if (totalFetched > 0 && classified.totalOpenPipeline.dealCount === 0 && classified.quarter.won.dealCount === 0) {
+          logger?.info(
+            { fetched: totalFetched, practices: validated.practiceValues },
+            'Deals fetched from BHG Pipeline but none matched requested practice values'
+          );
+        }
+
+        // Phase 4: Render
+        return renderResponse(classified, validated.practiceValues, validated.nextMonthEnd, validated.nextThreeMonthsEnd);
+      },
+    },
+  ];
 }

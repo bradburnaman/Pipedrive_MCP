@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { validateParams, normalizeDeal } from '../../src/tools/practice-pipeline.js';
+import { validateParams, normalizeDeal, renderResponse } from '../../src/tools/practice-pipeline.js';
+import { createPracticePipelineTools } from '../../src/tools/practice-pipeline.js';
+import type { ToolDefinition } from '../../src/types.js';
+import type { ClassificationResult, CanonicalDeal } from '../../src/lib/pipeline-classifier.js';
+import { createEmptyBucket, addToBucket } from '../../src/lib/pipeline-classifier.js';
 
 describe('validateParams', () => {
   const validParams = {
@@ -195,11 +199,6 @@ describe('normalizeDeal', () => {
   });
 });
 
-import { renderResponse } from '../../src/tools/practice-pipeline.js';
-import type { ClassificationResult } from '../../src/lib/pipeline-classifier.js';
-import { createEmptyBucket, addToBucket } from '../../src/lib/pipeline-classifier.js';
-import type { CanonicalDeal } from '../../src/lib/pipeline-classifier.js';
-
 function makeDeal(overrides: Partial<CanonicalDeal> = {}): CanonicalDeal {
   return {
     dealId: 1, title: 'Test', value: 50000, status: 'open',
@@ -294,5 +293,163 @@ describe('renderResponse', () => {
     const response = renderResponse(result, ['Varicent'], '2026-05-31', '2026-07-31');
     expect(response.totalOpenPipeline.deals).toHaveLength(50);
     expect(response.totalOpenPipeline.truncated).toBeUndefined();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Handler integration tests
+// ──────────────────────────────────────────────────────────────────────
+
+function mockClient() {
+  return { request: vi.fn() };
+}
+
+function mockResolverForHandler() {
+  const fieldRes = {
+    resolveInputField: vi.fn((label: string) => {
+      if (label === 'BHG Practices') return 'abc_bhg_practices';
+      throw new Error(`Unknown field '${label}'`);
+    }),
+    resolveInputValue: vi.fn((_key: string, value: unknown) => value),
+    getOutputKey: vi.fn((key: string) => key),
+    resolveOutputValue: vi.fn((key: string, value: unknown) => {
+      if (key === 'abc_bhg_practices') {
+        const map: Record<number, string> = { 10: 'Varicent', 11: 'Xactly' };
+        if (typeof value === 'number') return map[value] ?? value;
+        if (Array.isArray(value)) return value.map(v => map[v] ?? v);
+      }
+      if (key === 'label') {
+        const map: Record<number, string> = { 42: 'Commit', 43: 'Upside' };
+        if (typeof value === 'number') return map[value] ?? value;
+      }
+      return value;
+    }),
+    getFieldDefinitions: vi.fn(() => []),
+  };
+  const pipelineRes = {
+    resolvePipelineNameToId: vi.fn((name: string) => {
+      if (name === 'BHG Pipeline') return 1;
+      throw new Error(`No pipeline found matching '${name}'`);
+    }),
+    resolvePipelineIdToName: vi.fn((id: number) => id === 1 ? 'BHG Pipeline' : `Pipeline ${id}`),
+    resolveStageIdToName: vi.fn((id: number) => {
+      const map: Record<number, string> = { 10: 'Qualified', 11: 'Proposal Sent', 12: 'Closed Won' };
+      return map[id] ?? `Stage ${id}`;
+    }),
+    resolveStageNameToId: vi.fn(),
+    resolveStageGlobally: vi.fn(),
+    getPipelines: vi.fn(() => []),
+    getStagesForPipeline: vi.fn(() => []),
+  };
+  return {
+    instance: {
+      getFieldResolver: vi.fn().mockResolvedValue(fieldRes),
+      getUserResolver: vi.fn().mockResolvedValue({ resolveIdToName: vi.fn() }),
+      getPipelineResolver: vi.fn().mockResolvedValue(pipelineRes),
+    } as any,
+    fieldResolver: fieldRes,
+    pipelineResolver: pipelineRes,
+  };
+}
+
+function apiResponse(data: unknown, additionalData?: Record<string, unknown>) {
+  return {
+    status: 200,
+    data: { success: true, data, additional_data: additionalData },
+    headers: new Headers(),
+  };
+}
+
+describe('get-practice-pipeline handler', () => {
+  let client: ReturnType<typeof mockClient>;
+  let resolverMocks: ReturnType<typeof mockResolverForHandler>;
+  let tools: ToolDefinition[];
+
+  function findTool(name: string): ToolDefinition {
+    const tool = tools.find(t => t.name === name);
+    if (!tool) throw new Error(`Tool '${name}' not found`);
+    return tool;
+  }
+
+  beforeEach(() => {
+    client = mockClient();
+    resolverMocks = mockResolverForHandler();
+    tools = createPracticePipelineTools(client as any, resolverMocks.instance);
+  });
+
+  it('returns practice pipeline summary for a simple case', async () => {
+    // Mock open deals response
+    client.request.mockResolvedValueOnce(apiResponse([
+      {
+        id: 1, title: 'Deal A', value: 100000, status: 'open',
+        won_time: null, expected_close_date: '2026-05-15',
+        stage_id: 11, label_ids: [42], org_name: 'Acme',
+        custom_fields: { abc_bhg_practices: 10 },
+      },
+    ]));
+    // Mock won deals response
+    client.request.mockResolvedValueOnce(apiResponse([
+      {
+        id: 2, title: 'Deal B', value: 50000, status: 'won',
+        won_time: '2026-04-10T14:00:00Z', expected_close_date: '2026-04-15',
+        stage_id: 12, label_ids: [], org_name: 'BigCorp',
+        custom_fields: { abc_bhg_practices: 10 },
+      },
+    ]));
+
+    const result = await findTool('get-practice-pipeline').handler({
+      practiceValues: ['Varicent'],
+      monthEnd: '2026-04-30',
+      quarterEnd: '2026-06-30',
+      nextQuarterStart: '2026-07-01',
+      nextQuarterEnd: '2026-09-30',
+      wonPeriodStart: '2026-04-01',
+      wonPeriodEnd: '2026-04-17',
+      wonQuarterStart: '2026-04-01',
+      nextMonthEnd: '2026-05-31',
+      nextThreeMonthsEnd: '2026-07-31',
+    }) as any;
+
+    expect(result.pipeline).toBe('BHG Pipeline');
+    expect(result.practiceValues).toEqual(['Varicent']);
+    // Won deal in month and quarter
+    expect(result.month.won.totalValue).toBe(50000);
+    expect(result.quarter.won.totalValue).toBe(50000);
+    // Open Commit deal: expected_close_date 2026-05-15 > monthEnd 2026-04-30, so NOT in month.commit
+    expect(result.month.commit.totalValue).toBe(0);
+    // But within quarterEnd 2026-06-30, so in quarter.commit
+    expect(result.quarter.commit.totalValue).toBe(100000);
+    // Pipeline health
+    expect(result.totalOpenPipeline.totalValue).toBe(100000);
+    expect(result.nextMonthPipeline.totalValue).toBe(100000);
+    expect(result.nextMonthPipeline.periodEnd).toBe('2026-05-31');
+    // Verify API was called with correct params
+    expect(client.request).toHaveBeenCalledTimes(2);
+    const openCall = client.request.mock.calls[0];
+    expect(openCall[0]).toBe('GET');
+    expect(openCall[1]).toBe('v2');
+    expect(openCall[2]).toBe('/deals');
+    expect(openCall[4].pipeline_id).toBe('1');
+    expect(openCall[4].status).toBe('open');
+    expect(openCall[4].limit).toBe('500');
+    expect(openCall[4].custom_fields).toContain('abc_bhg_practices');
+  });
+
+  it('returns zero-value buckets when no deals match practice', async () => {
+    client.request.mockResolvedValueOnce(apiResponse([]));
+    client.request.mockResolvedValueOnce(apiResponse([]));
+
+    const result = await findTool('get-practice-pipeline').handler({
+      practiceValues: ['Varicent'],
+      monthEnd: '2026-04-30', quarterEnd: '2026-06-30',
+      nextQuarterStart: '2026-07-01', nextQuarterEnd: '2026-09-30',
+      wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
+      wonQuarterStart: '2026-04-01',
+      nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
+    }) as any;
+
+    expect(result.totalOpenPipeline.totalValue).toBe(0);
+    expect(result.totalOpenPipeline.dealCount).toBe(0);
+    expect(result.month.won.totalValue).toBe(0);
   });
 });
