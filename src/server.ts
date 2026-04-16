@@ -17,6 +17,7 @@ import { createNoteTools } from './tools/notes.js';
 import { createPipelineTools } from './tools/pipelines.js';
 import { createUserTools } from './tools/users.js';
 import { createFieldTools } from './tools/fields.js';
+import { createPracticePipelineTools } from './tools/practice-pipeline.js';
 import type { Logger } from 'pino';
 
 export function createServer(
@@ -31,7 +32,7 @@ export function createServer(
     version: '0.1.0',
   });
 
-  // Collect all tool definitions from all 8 tool files
+  // Collect all tool definitions from all 9 tool files
   const allTools: ToolDefinition[] = [
     ...createDealTools(client, resolver, entityResolver, logger),
     ...createPersonTools(client, resolver, entityResolver, logger),
@@ -41,6 +42,10 @@ export function createServer(
     ...createPipelineTools(resolver),
     ...createUserTools(resolver),
     ...createFieldTools(resolver),
+    // DEPLOYMENT RISK: get-practice-pipeline returns aggregated revenue pipeline data and should
+    // be restricted to trusted scorecard automation. Use PIPEDRIVE_DISABLED_TOOLS to exclude it
+    // from general read access if needed. See spec Section 8.
+    ...createPracticePipelineTools(client, resolver, logger),
   ];
 
   // Filter to only enabled tools
