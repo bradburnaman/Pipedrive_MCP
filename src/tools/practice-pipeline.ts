@@ -4,6 +4,7 @@ import type { PipedriveClient } from '../lib/pipedrive-client.js';
 import { normalizeApiCall } from '../lib/error-normalizer.js';
 import { parseStrictDate } from '../lib/date-utils.js';
 import type { Logger } from 'pino';
+import type { CanonicalDeal } from '../lib/pipeline-classifier.js';
 
 const CANONICAL_PRACTICES = ['Varicent', 'Xactly', 'CIQ/Emerging', 'Advisory', 'AI Product'] as const;
 const BHG_PRACTICES_FIELD_LABEL = 'BHG Practices';
@@ -92,5 +93,76 @@ export function validateParams(params: Record<string, unknown>): ValidatedParams
     wonQuarterStart: dates.wonQuarterStart,
     nextMonthEnd: dates.nextMonthEnd,
     nextThreeMonthsEnd: dates.nextThreeMonthsEnd,
+  };
+}
+
+/**
+ * Transform a raw Pipedrive v2 deal into a CanonicalDeal.
+ * All resolution uses cached reference data — zero per-deal API calls.
+ */
+export function normalizeDeal(
+  raw: Record<string, unknown>,
+  fieldResolver: { resolveOutputValue: (key: string, value: unknown) => unknown },
+  pipelineResolver: { resolveStageIdToName: (id: number) => string },
+  bhgPracticesKey: string,
+  logger?: Logger
+): CanonicalDeal {
+  // Defensive guards on API response shape
+  if (typeof raw.id !== 'number') {
+    throw new Error(`Deal missing numeric id`);
+  }
+  const status = raw.status as string;
+  if (status !== 'open' && status !== 'won') {
+    throw new Error(`Deal ${raw.id} has unexpected status '${status}'`);
+  }
+  if (typeof raw.value !== 'number') {
+    throw new Error(`Deal ${raw.id} has missing or non-numeric value`);
+  }
+
+  // Resolve practice values from custom_fields
+  const customFields = (raw.custom_fields ?? {}) as Record<string, unknown>;
+  const rawPractice = customFields[bhgPracticesKey];
+  let practiceValues: string[] = [];
+  if (rawPractice != null) {
+    const resolved = fieldResolver.resolveOutputValue(bhgPracticesKey, rawPractice);
+    if (Array.isArray(resolved)) {
+      practiceValues = resolved.filter((v): v is string => typeof v === 'string');
+    } else if (typeof resolved === 'string') {
+      practiceValues = [resolved];
+    }
+    // Hard fail if field is populated but unresolvable
+    if (practiceValues.length === 0) {
+      throw new Error(
+        'A deal has an unresolvable BHG Practices value. Field metadata may be inconsistent.'
+      );
+    }
+  }
+
+  // Resolve labels from label_ids
+  const rawLabelIds = raw.label_ids;
+  const labels: string[] = [];
+  if (Array.isArray(rawLabelIds)) {
+    for (const id of rawLabelIds) {
+      if (id == null) continue;
+      try {
+        const resolved = fieldResolver.resolveOutputValue('label', id);
+        if (typeof resolved === 'string') labels.push(resolved);
+      } catch {
+        logger?.warn({ labelId: id }, 'Unknown label option ID');
+      }
+    }
+  }
+
+  return {
+    dealId: raw.id as number,
+    title: (raw.title as string) ?? '',
+    value: raw.value as number,
+    status: status as 'open' | 'won',
+    wonTime: raw.won_time ? String(raw.won_time) : null,
+    expectedCloseDate: raw.expected_close_date ? String(raw.expected_close_date) : null,
+    stage: raw.stage_id ? pipelineResolver.resolveStageIdToName(raw.stage_id as number) : '',
+    labels,
+    organization: (raw.org_name as string) ?? null,
+    practiceValues,
   };
 }
