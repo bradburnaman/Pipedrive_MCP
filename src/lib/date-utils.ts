@@ -23,3 +23,53 @@ export function parseStrictDate(value: string, paramName: string): string {
   }
   return value;
 }
+
+/**
+ * Extract the YYYY-MM-DD date portion from an ISO timestamp.
+ * "2026-04-08T14:30:00Z" → "2026-04-08"
+ */
+function toDateOnly(isoTimestamp: string): string {
+  return isoTimestamp.slice(0, 10);
+}
+
+/**
+ * Check if wonTime falls within [start, end] inclusive.
+ * Compares date portion only (ignores time-of-day).
+ * Returns false if wonTime is null.
+ */
+export function isWonInPeriod(
+  wonTime: string | null,
+  start: string,
+  end: string
+): boolean {
+  if (wonTime === null) return false;
+  const date = toDateOnly(wonTime);
+  return date >= start && date <= end;
+}
+
+/**
+ * Check if expectedCloseDate is at or before ceiling.
+ * Ceiling-only — no floor. Intentionally includes overdue deals.
+ * Returns false if expectedCloseDate is null.
+ */
+export function isClosingByDate(
+  expectedCloseDate: string | null,
+  ceiling: string
+): boolean {
+  if (expectedCloseDate === null) return false;
+  return expectedCloseDate <= ceiling;
+}
+
+/**
+ * Check if expectedCloseDate falls within [floor, ceiling] inclusive.
+ * Both boundaries enforced. Used only for next-quarter commit/upside.
+ * Returns false if expectedCloseDate is null.
+ */
+export function isClosingInWindow(
+  expectedCloseDate: string | null,
+  floor: string,
+  ceiling: string
+): boolean {
+  if (expectedCloseDate === null) return false;
+  return expectedCloseDate >= floor && expectedCloseDate <= ceiling;
+}
