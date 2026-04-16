@@ -126,17 +126,17 @@ export function normalizeDeal(
   let practiceValues: string[] = [];
   if (rawPractice != null) {
     const resolved = fieldResolver.resolveOutputValue(bhgPracticesKey, rawPractice);
-    if (Array.isArray(resolved)) {
-      practiceValues = resolved.filter((v): v is string => typeof v === 'string');
-    } else if (typeof resolved === 'string') {
-      practiceValues = [resolved];
-    }
-    // Hard fail if field is populated but unresolvable
-    if (practiceValues.length === 0) {
+    const allResolved = Array.isArray(resolved) ? resolved : [resolved];
+    const strings = allResolved.filter((v): v is string => typeof v === 'string');
+    const unresolved = allResolved.filter(v => typeof v !== 'string');
+    // Hard fail if any option ID is unresolvable — partial resolution would silently
+    // alter practice membership and produce incorrect scorecard totals.
+    if (unresolved.length > 0 || strings.length === 0) {
       throw new Error(
         'A deal has an unresolvable BHG Practices value. Field metadata may be inconsistent.'
       );
     }
+    practiceValues = strings;
   }
 
   // Resolve labels from label_ids
@@ -149,7 +149,7 @@ export function normalizeDeal(
         const resolved = fieldResolver.resolveOutputValue('label', id);
         if (typeof resolved === 'string') labels.push(resolved);
       } catch {
-        logger?.warn({ labelId: id }, 'Unknown label option ID');
+        logger?.warn({ dealId: raw.id, labelId: id }, 'Unknown label option ID');
       }
     }
   }
