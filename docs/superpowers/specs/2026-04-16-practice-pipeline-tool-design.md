@@ -10,7 +10,11 @@
 
 Add one aggregate tool to the Pipedrive MCP server that returns a practice-level pipeline summary for the BHG Weekly Operations Scorecard automation. The tool provides won deals, committed deals, upside deals, and multi-horizon pipeline health metrics — segmented by time period — for one or more BHG Practices values. It is called once per scorecard practice by the orchestrator.
 
-This is a purpose-built scorecard aggregation tool, not a general-purpose deal query endpoint.
+This is a purpose-built scorecard aggregation tool, not a general-purpose deal query endpoint. It returns deal-level pipeline details and must be permissioned accordingly — intended only for trusted internal automation and approved operators, not broad interactive use.
+
+**Future considerations (not v1):**
+- `includeDeals` parameter defaulting to `true`, allowing callers to suppress deal-level detail arrays when only aggregate totals are needed
+- Per-bucket anomaly counters (`excludedForMissingWonTime`, `excludedForMissingExpectedCloseDate`) for improved operator debuggability without requiring log access
 
 ---
 
@@ -72,7 +76,9 @@ interface CanonicalDeal {
 | `organization` | `org_name` (if present in v2 response) | Use directly; fall back to null if absent. No per-deal lookup. |
 | `practiceValues` | `custom_fields[bhg_practices_key]` | Resolve option ID(s) via `FieldResolver.resolveOutputValue()` — cached field metadata. Normalize to `string[]` regardless of source shape. |
 
-**Normalization invariant:** Normalization must never silently invent missing business data. Missing `wonTime` on a won deal stays `null`. Missing `expectedCloseDate` stays `null`. Unknown option IDs are logged as data-quality anomalies and normalized to empty — never silently substituted.
+**Normalization invariant:** Normalization must never silently invent missing business data. Missing `wonTime` on a won deal stays `null`. Missing `expectedCloseDate` stays `null`.
+
+**Unknown option ID handling:** For BHG Practices, if the field is populated but the option ID cannot be resolved, this is a **hard failure** — the deal's practice membership cannot be determined, which means classification correctness is compromised. For labels, unknown option IDs are logged as data-quality warnings and normalized to empty, since label classification gracefully handles an empty label set (the deal simply enters no commit/upside buckets).
 
 **Implementation note:** Verify during implementation that `org_name` is reliably present in the v2 deals response. If only `org_id` is available, fall back to null rather than introducing N+1 lookups.
 
@@ -191,7 +197,7 @@ These two concerns are unconditionally separate. Totals are never affected by tr
 
 #### Stable Ordering Before Truncation
 
-Deals are sorted before being added to detail arrays:
+Each bucket sorts its own eligible deals independently before truncation. Sorting is bucket-local — the working set is not pre-sorted globally.
 
 - **Won buckets:** `wonTime` descending (most recent first), then `dealId` ascending as tie-breaker
 - **Commit/upside buckets:** `expectedCloseDate` ascending (soonest first), nulls last, then `dealId` ascending
@@ -253,7 +259,7 @@ interface DealDetail {
   wonTime?: string;                              // Present for won bucket deals
   expectedCloseDate?: string;                    // Present for all other bucket deals
   stage: string;
-  label: string | null;
+  labels: string[];                              // All resolved labels; preserves full info for consumers
   organization: string | null;
 }
 ```
@@ -264,8 +270,26 @@ interface DealDetail {
 2. `truncated` is bucket-local and only present when `true`.
 3. `DealDetail` includes the contextually relevant date field per bucket type.
 4. `periodEnd` on pipeline health buckets echoes the input ceiling for traceability.
-5. `label` in `DealDetail` shows the resolved label name; informational in won and pipeline health buckets, confirmatory in commit/upside buckets.
-6. `organization` is best-effort — null if the deal has no linked organization.
+5. `labels` in `DealDetail` preserves the full resolved label set. This avoids lossy collapse: consumers can see all labels, and the Commit-precedence classification is reflected by which bucket the deal appears in, not by which label is shown.
+6. `organization` is best-effort — null if the deal has no linked organization. If a cached resolution path becomes available in the future, this can be improved.
+
+### Consumer Guidance
+
+The response contains two bucket result variants and contextual fields that vary by bucket type. To consume correctly:
+
+| Field | Present In | Notes |
+|---|---|---|
+| `wonTime` | Won bucket deals only | Not present in commit/upside/pipeline health deals |
+| `expectedCloseDate` | All non-won bucket deals | Not present in won bucket deals |
+| `periodEnd` | `nextMonthPipeline`, `nextThreeMonthsPipeline` only | Echoes the ceiling date input parameter |
+| `truncated` | Any bucket where deals were capped at 50 | Omitted (not `false`) when all deals fit |
+| `labels` | All deals | Full resolved label set; may be empty |
+
+**Deal-level arrays are per-bucket diagnostic views, not a unique-deal listing.** The same deal can appear in multiple buckets (e.g., both `month.won` and `quarter.won`, or both `nextMonthPipeline` and `nextThreeMonthsPipeline`). This is intentional and reflects the overlapping time-scope semantics. Do not sum deal-level arrays across buckets to count unique deals.
+
+### Response Size
+
+Worst-case estimate: 11 buckets x 50 deals x ~200 bytes per `DealDetail` = ~110KB. In practice, BHG's pipeline (~150 deals) means most buckets will have far fewer than 50 deals, and total response size will typically be well under 50KB. No additional response size guard is needed beyond per-bucket truncation.
 
 ---
 
@@ -327,33 +351,45 @@ Violation returns: `"Invalid date range: wonPeriodStart (2026-04-17) is after wo
 
 ## 6. Error Handling
 
+### Principle: Concise External Errors, Detailed Internal Logs
+
+Error messages returned to callers must be actionable but must not leak internal metadata (available pipeline names, field option lists, etc.). Detailed diagnostics go to the internal log only.
+
 ### Hard Failures (abort, return error)
 
-| Condition | Error Message |
-|---|---|
-| Pipeline `"BHG Pipeline"` not found | `"Pipeline 'BHG Pipeline' not found. Available pipelines: ..."` |
-| BHG Practices custom field not found | `"Custom field 'BHG Practices' not found on deal fields."` |
-| BHG Practices field exists but expected option missing/renamed | `"BHG Practices option 'Varicent' not found in field metadata. Available options: ..."` |
-| Label field metadata unavailable | `"Unable to resolve label field metadata for deal fields."` |
-| Date validation failure | Parameter-specific message with both values |
-| Unknown practice value in input | Message with valid values list |
-| API errors (after retry) | Handled by existing `normalizeApiCall()` layer |
+| Condition | External Error (returned to caller) | Internal Log (detailed) |
+|---|---|---|
+| Pipeline `"BHG Pipeline"` not found | `"Pipeline 'BHG Pipeline' not found. Check whether the pipeline was renamed or removed."` | Log available pipelines |
+| BHG Practices custom field not found | `"Custom field 'BHG Practices' not found on deal fields. Check whether the Pipedrive field was renamed or removed."` | Log available deal field labels |
+| BHG Practices option missing/renamed | `"BHG Practices option 'Varicent' not found in field metadata. Verify the field options still include the expected canonical values."` | Log available option values |
+| BHG Practices populated but option ID unresolvable on a deal | `"Deal [dealId] has an unresolvable BHG Practices value. Field metadata may be inconsistent."` | Log the raw option ID |
+| Label field metadata unavailable | `"Unable to resolve label field metadata for deal fields. Check Pipedrive field configuration."` | Log field resolution details |
+| Date validation failure | Parameter-specific: `"Invalid date range: wonPeriodStart (2026-04-17) is after wonPeriodEnd (2026-04-01)."` | — |
+| Unknown practice value in input | `"Unknown practice value 'X'. Valid values: Varicent, Xactly, CIQ/Emerging, Advisory, AI Product."` | — (canonical set is not sensitive) |
+| API errors (after retry) | Handled by existing `normalizeApiCall()` layer | — |
 
-### Soft Warnings (log, continue)
+### Soft Warnings (log only, continue processing)
 
 | Condition | Log Level | Behavior |
 |---|---|---|
-| Won deal with null `wonTime` | warn | Excluded from won buckets, still processed |
-| Open labeled deal with null `expectedCloseDate` | warn | Enters `totalOpenPipeline` only |
-| Unresolved org name | info | Falls back to null |
-| Unknown option ID on processable deal | warn | Normalized to empty, ID logged |
+| Won deal with null `wonTime` | warn | Excluded from won buckets; log deal ID only |
+| Open labeled deal with null `expectedCloseDate` | warn | Enters `totalOpenPipeline` only; log deal ID only |
+| Unresolved org name | info | Falls back to null; do not log org details |
+| Unknown label option ID | warn | Normalized to empty labels; log the raw option ID |
+
+### Log Hygiene Rules
+
+- **Log deal IDs** sparingly and only for anomaly identification
+- **Never log** deal titles, organization names, deal values, or person references
+- **Aggregate repeated anomalies** into counts where possible (e.g., "3 won deals had null wonTime" rather than 3 separate warnings)
+- **Rate-limit repetitive warnings** for unknown option IDs across many deals — log the first occurrence with the ID, then summarize the count
 
 ### Empty Results (valid, not errors)
 
 | Condition | Log Level | Response |
 |---|---|---|
 | No deals fetched for pipeline at all | info: `"No deals found in BHG Pipeline with status open/won"` | Zero-value buckets |
-| Deals fetched, none match practices | info: `"N deals fetched from BHG Pipeline, 0 matched practice values [X, Y]"` | Zero-value buckets |
+| Deals fetched, none match practices | info: `"N deals fetched from BHG Pipeline, 0 matched practice values [requested values]"` | Zero-value buckets |
 
 ---
 
@@ -482,9 +518,13 @@ Verifies independent transparent pagination of both datasets.
 
 ---
 
-## 8. Registration
+## 8. Registration & Authorization
 
 The `createPracticePipelineTools` factory is imported in `server.ts` alongside existing tool factories. Its tools are added to `allTools` and pass through the same `isToolEnabled` access control filtering. Called with `(client, resolver, logger)`.
+
+**Authorization scope:** This tool is intended for trusted internal scorecard automation and approved operators only. It should not be exposed to general users simply because they have access to other `read`-category tools. If the access control system supports tool-level granularity in the future, this tool should have its own permission gate.
+
+**Expected call frequency:** The orchestrator calls this tool once per scorecard practice, typically 4 calls per weekly scorecard run. Normal usage is fewer than 10 calls per week. Significantly higher frequency suggests misconfiguration or abusive orchestration. The existing Pipedrive API rate limiting (via `PipedriveClient` rate-limit tracking) provides the underlying protection; no additional rate limiting is needed in the tool itself.
 
 ---
 
@@ -538,3 +578,63 @@ Response-to-spreadsheet mapping:
 | `nextThreeMonthsPipeline.totalValue` | Total Pipeline (C30) | Face value |
 
 Weighting and derived calculations are handled by spreadsheet formulas. The tool provides face values only.
+
+### Compact Example Response
+
+Illustrates one tracking bucket, one pipeline-health bucket with `periodEnd`, and truncation:
+
+```json
+{
+  "practiceValues": ["Varicent"],
+  "pipeline": "BHG Pipeline",
+  "month": {
+    "won": {
+      "totalValue": 50000,
+      "dealCount": 1,
+      "deals": [
+        {
+          "dealId": 101,
+          "title": "Acme Varicent Implementation",
+          "value": 50000,
+          "wonTime": "2026-04-10T14:00:00Z",
+          "stage": "Closed Won",
+          "labels": ["Commit"],
+          "organization": "Acme Corp"
+        }
+      ]
+    },
+    "commit": { "totalValue": 0, "dealCount": 0, "deals": [] },
+    "upside": { "totalValue": 0, "dealCount": 0, "deals": [] }
+  },
+  "quarter": { "...": "same structure" },
+  "nextQuarter": { "commit": { "...": "..." }, "upside": { "...": "..." } },
+  "totalOpenPipeline": {
+    "totalValue": 5200000,
+    "dealCount": 55,
+    "deals": ["... first 50 deals sorted by expectedCloseDate asc ..."],
+    "truncated": true
+  },
+  "nextMonthPipeline": {
+    "totalValue": 1301600,
+    "dealCount": 8,
+    "periodEnd": "2026-05-31",
+    "deals": [
+      {
+        "dealId": 202,
+        "title": "BigCorp Varicent Phase 2",
+        "value": 300000,
+        "expectedCloseDate": "2026-05-01",
+        "stage": "Proposal Sent",
+        "labels": ["Commit"],
+        "organization": "BigCorp"
+      }
+    ]
+  },
+  "nextThreeMonthsPipeline": {
+    "totalValue": 2881750,
+    "dealCount": 15,
+    "periodEnd": "2026-07-31",
+    "deals": ["..."]
+  }
+}
+```
