@@ -1,6 +1,10 @@
 // src/index.ts
 
 import { assertConfigDirSafe, assertCwdClean } from './lib/path-safety.js';
+import {
+  getToken, evaluateRotation, envOverrideAllowed, permissionRepairEvents,
+} from './lib/secret-store.js';
+import { probeClaudeDesktopConfig } from './lib/claude-desktop-probe.js';
 import { parseConfig } from './config.js';
 import { PipedriveClient } from './lib/pipedrive-client.js';
 import { ReferenceResolver } from './lib/reference-resolver/index.js';
@@ -22,20 +26,83 @@ async function main() {
 
   logger.info({ transport: config.transport }, 'Pipedrive MCP Server starting');
 
-  // Initialize client with logger
-  const client = new PipedriveClient(config.apiToken, logger);
+  // --- Token resolution (Keychain first; env override is restricted) ---
+  let token: string;
+  let issuedAt: string | null = null;
+  let envOverrideReason: string | null = null;
 
-  // Validate token — fail fast with clear error if invalid
+  const ov = envOverrideAllowed();
+  if (ov.allowed && process.env.PIPEDRIVE_API_TOKEN) {
+    token = process.env.PIPEDRIVE_API_TOKEN.trim();
+    envOverrideReason = ov.reason ?? null;
+    if (envOverrideReason && envOverrideReason.startsWith('break_glass:')) {
+      process.stderr.write(
+        `WARNING: break-glass env override active. Reason: ${envOverrideReason.slice('break_glass:'.length)}\n`,
+      );
+      // sec-06 will also write a BREAK_GLASS_ENV_OVERRIDE audit row + exceptions.log entry.
+    }
+  } else {
+    const entry = await getToken();
+    if (!entry) {
+      console.error('No token in Keychain. Run `npm run setup`.');
+      process.exit(1);
+    }
+    token = entry.token;
+    issuedAt = entry.issuedAt;
+  }
+
+  // --- Rotation gate (75/90/120 days per spec §7.5) ---
+  if (issuedAt) {
+    const r = evaluateRotation(issuedAt);
+    const staleReason = (process.env.BHG_PIPEDRIVE_STALE_REASON ?? '').trim();
+    if (r.status === 'refuse') {
+      const allowStale = process.env.BHG_PIPEDRIVE_ALLOW_STALE === '1';
+      if (!allowStale || staleReason.length === 0) {
+        console.error(
+          `Token is ${Math.floor(r.ageDays)} days old (hard-block >= 120d). ` +
+          'Run `npm run setup -- --rotate`. Override requires both ' +
+          'BHG_PIPEDRIVE_ALLOW_STALE=1 AND BHG_PIPEDRIVE_STALE_REASON="...".',
+        );
+        process.exit(1);
+      }
+      // sec-06 will write STALE_TOKEN_EXCEPTION audit row + exceptions.log entry.
+    }
+    if (r.status === 'due' || r.status === 'degraded') {
+      process.stderr.write(
+        `Token is ${Math.floor(r.ageDays)} days old. Rotate soon (\`npm run setup -- --rotate\`).\n`,
+      );
+    }
+  }
+
+  // --- Claude Desktop config probe (warn on hardcoded token) ---
+  const probe = probeClaudeDesktopConfig();
+  if (probe) {
+    process.stderr.write(
+      `WARNING: Claude Desktop config ${probe.path} has PIPEDRIVE_API_TOKEN in ` +
+      `env block(s): ${probe.servers.join(', ')}. Remove the env block — this ` +
+      'server reads the token from Keychain.\n',
+    );
+    // sec-06 will also write a CLAUDE_DESKTOP_TOKEN_IN_CONFIG audit row.
+  }
+
+  // sec-06 will replay permissionRepairEvents into PERMISSION_REPAIRED audit rows.
+  if (permissionRepairEvents.length > 0) {
+    logger.warn({ events: permissionRepairEvents }, 'Sensitive file permissions repaired at startup');
+  }
+
+  // Initialize client with logger
+  const client = new PipedriveClient(token, logger);
+
+  // Validate token against Pipedrive API
   try {
     const user = await client.validateToken();
     logger.info({ userId: user.id, userName: user.name }, 'Token validated');
   } catch (err) {
-    logger.fatal({ err }, 'Invalid or missing PIPEDRIVE_API_TOKEN. Exiting.');
+    logger.fatal({ err }, 'Token rejected by Pipedrive. Exiting.');
     process.exit(1);
   }
 
   // Initialize resolvers — lazy init, caches prime on first access
-  // NO initialize() call needed — ReferenceResolver uses lazy loading
   const resolver = new ReferenceResolver(client, logger);
   const entityResolver = new EntityResolver(client, logger);
 
@@ -48,12 +115,8 @@ async function main() {
     await server.connect(transport);
     logger.info('Server running on stdio');
   } else {
-    // SSE mode — not yet implemented
-    // The SSE transport API varies across MCP SDK versions and requires
-    // verification against the installed version. Implement as a fast-follow
-    // after the stdio path is working end-to-end.
     logger.fatal(
-      'SSE transport is not yet implemented. Use stdio mode (the default) or implement SSE support against the installed SDK version.'
+      'SSE transport is not yet implemented. Use stdio mode (the default) or implement SSE support against the installed SDK version.',
     );
     process.exit(1);
   }
