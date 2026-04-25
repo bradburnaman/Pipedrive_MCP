@@ -20,9 +20,29 @@ async function main() {
 
   // Logger writes to stderr (fd 2) in all modes — stdout is reserved for
   // MCP JSON-RPC in stdio mode, and stderr is correct for SSE too.
-  const logger = pino({
-    level: config.logLevel,
-  }, pino.destination(2));
+  const logger = pino(
+    {
+      level: config.logLevel,
+      redact: {
+        paths: [
+          'apiToken',
+          'api_token',
+          'token',
+          'config.apiToken',
+          'req.url',
+          'url',
+          'headers.authorization',
+          'headers.Authorization',
+          'req.headers.authorization',
+          'err.config.url',
+          '*.apiToken',
+          '*.api_token',
+        ],
+        remove: true,
+      },
+    },
+    pino.destination(2),
+  );
 
   logger.info({ transport: config.transport }, 'Pipedrive MCP Server starting');
 

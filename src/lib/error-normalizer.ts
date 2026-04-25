@@ -1,5 +1,6 @@
 import type { PipedriveApiError } from '../types.js';
 import type { Logger } from 'pino';
+import { stripTokenPattern } from './sanitize-log.js';
 
 interface ApiResponse {
   status: number;
@@ -42,8 +43,28 @@ const RETRY_CONFIG: Record<number, { delayMs: number; getDelay?: (response: ApiR
 
 const NO_RETRY = new Set([500, 504]);
 
+function sanitizeDetails(d: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(d)) {
+    if (typeof v === 'string') out[k] = stripTokenPattern(v);
+    else if (Array.isArray(v)) out[k] = v.map(item =>
+      typeof item === 'string' ? stripTokenPattern(item)
+      : (typeof item === 'object' && item !== null) ? sanitizeDetails(item as Record<string, unknown>)
+      : item
+    );
+    else if (typeof v === 'object' && v !== null) out[k] = sanitizeDetails(v as Record<string, unknown>);
+    else out[k] = v;
+  }
+  return out;
+}
+
 function makeError(code: number, message: string, details?: Record<string, unknown>): PipedriveApiError {
-  return { error: true, code, message, details };
+  return {
+    error: true,
+    code,
+    message: stripTokenPattern(message),
+    details: details ? sanitizeDetails(details) : undefined,
+  };
 }
 
 async function _normalizeApiCall(
