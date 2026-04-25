@@ -1,5 +1,6 @@
 // src/index.ts
 
+import { assertConfigDirSafe, assertCwdClean } from './lib/path-safety.js';
 import { parseConfig } from './config.js';
 import { PipedriveClient } from './lib/pipedrive-client.js';
 import { ReferenceResolver } from './lib/reference-resolver/index.js';
@@ -9,6 +10,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import pino from 'pino';
 
 async function main() {
+  assertConfigDirSafe();
+  assertCwdClean();
   const config = parseConfig();
 
   // Logger writes to stderr (fd 2) in all modes — stdout is reserved for
