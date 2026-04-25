@@ -2,3 +2,11 @@ node_modules/
 dist/
 .env
 *.tsbuildinfo
+
+# Security: generated and private files that must never be committed
+src/lib/version-id.ts
+*.db
+*.db-journal
+*.db.archive
+salt.bin
+dist/sbom.json

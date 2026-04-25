@@ -1,6 +1,5 @@
 // src/index.ts
 
-import 'dotenv/config';
 import { parseConfig } from './config.js';
 import { PipedriveClient } from './lib/pipedrive-client.js';
 import { ReferenceResolver } from './lib/reference-resolver/index.js';
