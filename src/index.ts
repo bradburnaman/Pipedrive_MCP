@@ -5,6 +5,7 @@ import {
   getToken, evaluateRotation, envOverrideAllowed, permissionRepairEvents,
 } from './lib/secret-store.js';
 import { probeClaudeDesktopConfig } from './lib/claude-desktop-probe.js';
+import { VERSION_ID, versionString } from './lib/version-id.js';
 import { parseConfig } from './config.js';
 import { PipedriveClient } from './lib/pipedrive-client.js';
 import { ReferenceResolver } from './lib/reference-resolver/index.js';
@@ -44,7 +45,10 @@ async function main() {
     pino.destination(2),
   );
 
-  logger.info({ transport: config.transport }, 'Pipedrive MCP Server starting');
+  logger.info(
+    { transport: config.transport, version: versionString(), dirty: VERSION_ID.dirty },
+    'Pipedrive MCP Server starting',
+  );
 
   // --- Token resolution (Keychain first; env override is restricted) ---
   let token: string;
