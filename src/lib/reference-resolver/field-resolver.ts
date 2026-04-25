@@ -10,6 +10,7 @@ export class FieldResolver {
   private systemFields: Set<string>;
   private labelToKey: Map<string, string>;           // "Practice Area" -> "abc123_practice_area"
   private keyToLabel: Map<string, string>;            // "abc123_practice_area" -> "Practice Area"
+  private keyToFieldType: Map<string, string>;        // "abc123_practice_area" -> "set"
   private keyToOptions: Map<string, FieldOption[]>;   // "abc123_practice_area" -> [{ id, label }]
   private optionLabelToId: Map<string, Map<string, number>>; // key -> (label -> id)
   private optionIdToLabel: Map<string, Map<number, string>>; // key -> (id -> label)
@@ -21,6 +22,7 @@ export class FieldResolver {
     this.systemFields = systemFields;
     this.labelToKey = new Map();
     this.keyToLabel = new Map();
+    this.keyToFieldType = new Map();
     this.keyToOptions = new Map();
     this.optionLabelToId = new Map();
     this.optionIdToLabel = new Map();
@@ -28,8 +30,9 @@ export class FieldResolver {
     this.customPrefixMap = new Map();
 
     for (const field of fields) {
-      // Map key -> label
+      // Map key -> label and key -> field_type
       this.keyToLabel.set(field.key, field.name);
+      if (field.field_type) this.keyToFieldType.set(field.key, field.field_type);
 
       // Check for collision: custom field whose label matches a system field key
       const labelLower = field.name.toLowerCase();
@@ -85,8 +88,10 @@ export class FieldResolver {
     const labelMap = this.optionLabelToId.get(key);
     if (!labelMap || typeof value !== 'string') return value;
 
+    const isSet = this.keyToFieldType.get(key) === 'set';
+
     const id = labelMap.get(value.toLowerCase());
-    if (id !== undefined) return id;
+    if (id !== undefined) return isSet ? [id] : id;
 
     // Unknown option
     const options = this.keyToOptions.get(key) ?? [];
@@ -111,7 +116,12 @@ export class FieldResolver {
 
   resolveOutputValue(key: string, value: unknown): unknown {
     const idMap = this.optionIdToLabel.get(key);
-    if (!idMap || typeof value !== 'number') return value;
+    if (!idMap) return value;
+    // Set fields return arrays of IDs from the v2 API
+    if (Array.isArray(value)) {
+      return value.map(v => (typeof v === 'number' ? idMap.get(v) ?? v : v));
+    }
+    if (typeof value !== 'number') return value;
     return idMap.get(value) ?? value;
   }
 

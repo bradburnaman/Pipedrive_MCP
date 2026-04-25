@@ -280,7 +280,7 @@ describe('createOrganizationTools', () => {
       });
 
       const body = client.request.mock.calls[0][3] as Record<string, unknown>;
-      expect(body.hash_industry).toBe('Technology');
+      expect(body.custom_fields).toEqual({ hash_industry: 'Technology' });
     });
 
     it('does not call entityResolver (orgs have no entity links on create)', async () => {
@@ -380,10 +380,20 @@ describe('createOrganizationTools', () => {
 
   describe('search-organizations', () => {
     it('returns summary shape results', async () => {
-      const raw = makePipedriveOrgRaw();
+      // Search endpoint wraps each result in { item: { ... } } with owner as nested object
+      const searchItem = {
+        result_score: 1.5,
+        item: {
+          id: 501,
+          name: 'Acme Corp',
+          owner: { id: 101 },
+          address: '123 Main St, Springfield, IL 62701',
+          update_time: '2026-03-18T11:45:00Z',
+        },
+      };
       client.request.mockResolvedValue({
         status: 200,
-        data: { data: { items: [raw] }, additional_data: {} },
+        data: { data: { items: [searchItem] }, additional_data: {} },
         headers: new Headers(),
       });
 

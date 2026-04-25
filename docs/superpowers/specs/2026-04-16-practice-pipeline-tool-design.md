@@ -8,7 +8,7 @@
 
 ## 1. Purpose
 
-Add one aggregate tool to the Pipedrive MCP server that returns a practice-level pipeline summary for the BHG Weekly Operations Scorecard automation. The tool provides won deals, committed deals, upside deals, and multi-horizon pipeline health metrics — segmented by time period — for one or more BHG Practices values. It is called once per scorecard practice by the orchestrator.
+Add one aggregate tool to the Pipedrive MCP server that returns a practice-level pipeline summary for the BHG Weekly Operations Scorecard automation. The tool provides won deals, committed deals, upside deals, and multi-horizon pipeline health metrics — segmented by time period — for one or more BHG Practice values. It is called once per scorecard practice by the orchestrator.
 
 This is a purpose-built scorecard aggregation tool, not a general-purpose deal query endpoint. It returns deal-level pipeline details and must be permissioned accordingly — intended only for trusted internal automation and approved operators, not broad interactive use.
 
@@ -36,7 +36,7 @@ Four phases, each with a single responsibility and clean boundary.
 
 ### Phase 1 — Fetch
 
-Paginate through all deals in the BHG Pipeline, making separate paginated queries for `status=open` and `status=won` via `GET /v2/deals`. Continue fetching each status until the API provides no next cursor. Request the BHG Practices custom field key and Label field key in the `custom_fields` query param so they are included in every response page. Use `limit=500` per page.
+Paginate through all deals in the BHG Pipeline, making separate paginated queries for `status=open` and `status=won` via `GET /v2/deals`. Continue fetching each status until the API provides no next cursor. Request the BHG Practice custom field key and Label field key in the `custom_fields` query param so they are included in every response page. Use `limit=500` per page.
 
 This phase knows nothing about practices, labels, or dates. It retrieves the full pipeline dataset.
 
@@ -57,7 +57,7 @@ interface CanonicalDeal {
   stage: string;                     // resolved name via PipelineResolver (cached)
   labels: string[];                  // resolved label names via FieldResolver (cached)
   organization: string | null;       // org_name from response, or null
-  practiceValues: string[];          // resolved BHG Practices values via FieldResolver (cached)
+  practiceValues: string[];          // resolved BHG Practice values via FieldResolver (cached)
 }
 ```
 
@@ -78,7 +78,7 @@ interface CanonicalDeal {
 
 **Normalization invariant:** Normalization must never silently invent missing business data. Missing `wonTime` on a won deal stays `null`. Missing `expectedCloseDate` stays `null`.
 
-**Unknown option ID handling:** For BHG Practices, if the field is populated but the option ID cannot be resolved, this is a **hard failure** — the deal's practice membership cannot be determined, which means classification correctness is compromised. For labels, unknown option IDs are logged as data-quality warnings and normalized to empty, since label classification gracefully handles an empty label set (the deal simply enters no commit/upside buckets).
+**Unknown option ID handling:** For BHG Practice, if the field is populated but the option ID cannot be resolved, this is a **hard failure** — the deal's practice membership cannot be determined, which means classification correctness is compromised. For labels, unknown option IDs are logged as data-quality warnings and normalized to empty, since label classification gracefully handles an empty label set (the deal simply enters no commit/upside buckets).
 
 **Implementation note:** Verify during implementation that `org_name` is reliably present in the v2 deals response. If only `org_id` is available, fall back to null rather than introducing N+1 lookups.
 
@@ -301,7 +301,7 @@ Directional worst-case estimate: 11 buckets x 50 deals x ~200 bytes per `DealDet
 - **MCP name:** `get-practice-pipeline` (kebab-case, matching `list-deals`, `search-deals`)
 - **Requirements doc name:** `get_practice_pipeline` (conceptual reference)
 - **Category:** `read`
-- **Description:** "Returns a practice-level pipeline summary for BHG Pipeline scorecard automation. Aggregates won, committed, upside, and pipeline health metrics by time period for the specified BHG Practices values. Not a general-purpose deal query tool."
+- **Description:** "Returns a practice-level pipeline summary for BHG Pipeline scorecard automation. Aggregates won, committed, upside, and pipeline health metrics by time period for the specified BHG Practice values. Not a general-purpose deal query tool."
 
 ### Factory Signature
 
@@ -319,7 +319,7 @@ No `entityResolver` — this tool consumes deal data, not entity name-to-ID refe
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `practiceValues` | `string[]` (`minItems: 1`) | Yes | BHG Practices values to include |
+| `practiceValues` | `string[]` (`minItems: 1`) | Yes | BHG Practice values to include |
 | `monthEnd` | `string` (YYYY-MM-DD) | Yes | Ceiling for month commit/upside |
 | `quarterEnd` | `string` (YYYY-MM-DD) | Yes | Ceiling for quarter commit/upside |
 | `nextQuarterStart` | `string` (YYYY-MM-DD) | Yes | Floor for next-quarter commit/upside |
@@ -361,9 +361,9 @@ Error messages returned to callers must be actionable but must not leak internal
 | Condition | External Error (returned to caller) | Internal Log (detailed) |
 |---|---|---|
 | Pipeline `"BHG Pipeline"` not found | `"Pipeline 'BHG Pipeline' not found. Check whether the pipeline was renamed or removed."` | Log available pipelines |
-| BHG Practices custom field not found | `"Custom field 'BHG Practices' not found on deal fields. Check whether the Pipedrive field was renamed or removed."` | Log available deal field labels |
-| BHG Practices option missing/renamed | `"BHG Practices option 'Varicent' not found in field metadata. Verify the field options still include the expected canonical values."` | Log available option values |
-| BHG Practices populated but option ID unresolvable on a deal | `"A deal has an unresolvable BHG Practices value. Field metadata may be inconsistent."` | Log the deal ID and raw option ID |
+| BHG Practice custom field not found | `"Custom field 'BHG Practice' not found on deal fields. Check whether the Pipedrive field was renamed or removed."` | Log available deal field labels |
+| BHG Practice option missing/renamed | `"BHG Practice option 'Varicent' not found in field metadata. Verify the field options still include the expected canonical values."` | Log available option values |
+| BHG Practice populated but option ID unresolvable on a deal | `"A deal has an unresolvable BHG Practice value. Field metadata may be inconsistent."` | Log the deal ID and raw option ID |
 | Label field metadata unavailable | `"Unable to resolve label field metadata for deal fields. Check Pipedrive field configuration."` | Log field resolution details |
 | Date validation failure | Parameter-specific: `"Invalid date range: wonPeriodStart (2026-04-17) is after wonPeriodEnd (2026-04-01)."` | — |
 | Unknown practice value in input | `"Unknown practice value 'X'. Valid values: Varicent, Xactly, CIQ/Emerging, Advisory, AI Product."` | — (canonical set is not sensitive) |
@@ -512,7 +512,7 @@ Verifies independent transparent pagination of both datasets.
 
 ### Metadata Drift Hard-Failure Tests
 
-- BHG Practices field missing from deal fields → concise external error; detailed field list in internal log
+- BHG Practice field missing from deal fields → concise external error; detailed field list in internal log
 - Expected practice option value missing/renamed → concise external error; available options in internal log
 - Label field metadata unavailable → concise external error; resolution details in internal log
 - Pipeline `"BHG Pipeline"` resolution failure → concise external error; available pipelines in internal log only

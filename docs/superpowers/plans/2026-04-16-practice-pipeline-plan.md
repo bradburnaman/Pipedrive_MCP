@@ -1150,7 +1150,7 @@ import { parseStrictDate } from '../lib/date-utils.js';
 import type { Logger } from 'pino';
 
 const CANONICAL_PRACTICES = ['Varicent', 'Xactly', 'CIQ/Emerging', 'Advisory', 'AI Product'] as const;
-const BHG_PRACTICES_FIELD_LABEL = 'BHG Practices';
+const BHG_PRACTICES_FIELD_LABEL = 'BHG Practice';
 const BHG_PIPELINE_NAME = 'BHG Pipeline';
 
 export interface ValidatedParams {
@@ -1271,7 +1271,7 @@ import { normalizeDeal } from '../../src/tools/practice-pipeline.js';
 function mockFieldResolver() {
   return {
     resolveInputField: vi.fn((label: string) => {
-      if (label === 'BHG Practices') return 'abc_bhg_practices';
+      if (label === 'BHG Practice') return 'abc_bhg_practices';
       return label;
     }),
     resolveInputValue: vi.fn((_key: string, value: unknown) => {
@@ -1429,7 +1429,7 @@ export function normalizeDeal(
     // Hard fail if field is populated but unresolvable
     if (practiceValues.length === 0) {
       throw new Error(
-        'A deal has an unresolvable BHG Practices value. Field metadata may be inconsistent.'
+        'A deal has an unresolvable BHG Practice value. Field metadata may be inconsistent.'
       );
     }
   }
@@ -1735,7 +1735,7 @@ function mockClient() {
 function mockResolverForHandler() {
   const fieldRes = {
     resolveInputField: vi.fn((label: string) => {
-      if (label === 'BHG Practices') return 'abc_bhg_practices';
+      if (label === 'BHG Practice') return 'abc_bhg_practices';
       throw new Error(`Unknown field '${label}'`);
     }),
     resolveInputValue: vi.fn((_key: string, value: unknown) => value),
@@ -1946,7 +1946,7 @@ export function createPracticePipelineTools(
     {
       name: 'get-practice-pipeline',
       category: 'read' as const,
-      description: 'Returns a practice-level pipeline summary for BHG Pipeline scorecard automation. Aggregates won, committed, upside, and pipeline health metrics by time period for the specified BHG Practices values. Not a general-purpose deal query tool.',
+      description: 'Returns a practice-level pipeline summary for BHG Pipeline scorecard automation. Aggregates won, committed, upside, and pipeline health metrics by time period for the specified BHG Practice values. Not a general-purpose deal query tool.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1954,7 +1954,7 @@ export function createPracticePipelineTools(
             type: 'array',
             items: { type: 'string', enum: [...CANONICAL_PRACTICES] },
             minItems: 1,
-            description: 'BHG Practices values to include. Valid: Varicent, Xactly, CIQ/Emerging, Advisory, AI Product.',
+            description: 'BHG Practice values to include. Valid: Varicent, Xactly, CIQ/Emerging, Advisory, AI Product.',
           },
           monthEnd: { type: 'string', description: 'Ceiling for month commit/upside (YYYY-MM-DD)' },
           quarterEnd: { type: 'string', description: 'Ceiling for quarter commit/upside (YYYY-MM-DD)' },
@@ -1979,7 +1979,7 @@ export function createPracticePipelineTools(
         const fieldResolver = await resolver.getFieldResolver('deal');
         const pipelineResolver = await resolver.getPipelineResolver();
 
-        // Resolve BHG Practices field key
+        // Resolve BHG Practice field key
         let bhgPracticesKey: string;
         try {
           bhgPracticesKey = fieldResolver.resolveInputField(BHG_PRACTICES_FIELD_LABEL);
@@ -1995,7 +1995,7 @@ export function createPracticePipelineTools(
             fieldResolver.resolveInputValue(bhgPracticesKey, practice);
           } catch {
             throw new Error(
-              `BHG Practices option '${practice}' not found in field metadata. Verify the field options still include the expected canonical values.`
+              `BHG Practice option '${practice}' not found in field metadata. Verify the field options still include the expected canonical values.`
             );
           }
         }
@@ -2021,7 +2021,7 @@ export function createPracticePipelineTools(
         }
 
         // Phase 2: Normalize
-        // Normalization errors (e.g., unresolvable BHG Practices option ID) are caught
+        // Normalization errors (e.g., unresolvable BHG Practice option ID) are caught
         // and re-thrown with a generic external message. Detail goes to logs only.
         const allDeals: CanonicalDeal[] = [];
         for (const raw of [...rawOpenDeals, ...rawWonDeals]) {
@@ -2226,7 +2226,7 @@ Append to the `get-practice-pipeline handler` describe block:
       })).rejects.toThrow("Pipeline 'BHG Pipeline' not found");
     });
 
-    it('fails when BHG Practices field not found', async () => {
+    it('fails when BHG Practice field not found', async () => {
       resolverMocks.fieldResolver.resolveInputField.mockImplementation(() => {
         throw new Error('Unknown field');
       });
@@ -2238,7 +2238,7 @@ Append to the `get-practice-pipeline handler` describe block:
         wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
         wonQuarterStart: '2026-04-01',
         nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
-      })).rejects.toThrow("Custom field 'BHG Practices' not found");
+      })).rejects.toThrow("Custom field 'BHG Practice' not found");
     });
 
     it('fails when label field metadata is unavailable', async () => {
@@ -2283,7 +2283,7 @@ Append to the `get-practice-pipeline handler` describe block:
         wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
         wonQuarterStart: '2026-04-01',
         nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
-      })).rejects.toThrow("BHG Practices option 'Varicent' not found in field metadata");
+      })).rejects.toThrow("BHG Practice option 'Varicent' not found in field metadata");
     });
   });
 ```
@@ -2305,7 +2305,7 @@ Append to the `get-practice-pipeline handler` describe block:
     expect(client.request).not.toHaveBeenCalled();
   });
 
-  it('handles unresolvable BHG Practices option ID on a deal as hard failure', async () => {
+  it('handles unresolvable BHG Practice option ID on a deal as hard failure', async () => {
     client.request.mockResolvedValueOnce(apiResponse([
       {
         id: 99, title: 'Bad Deal', value: 10000, status: 'open',
@@ -2333,7 +2333,7 @@ Append to the `get-practice-pipeline handler` describe block:
       wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
       wonQuarterStart: '2026-04-01',
       nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
-    })).rejects.toThrow('unresolvable BHG Practices value');
+    })).rejects.toThrow('unresolvable BHG Practice value');
   });
 ```
 

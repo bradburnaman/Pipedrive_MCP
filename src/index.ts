@@ -1,23 +1,6 @@
 // src/index.ts
 
-// FIRST: Load env vars (dotenv has no stdout side effects)
 import 'dotenv/config';
-
-// SECOND: Redirect stdout to stderr IMMEDIATELY — before all other imports.
-// This prevents any module initialization code from corrupting the MCP
-// JSON-RPC protocol stream in stdio mode. The redirect applies in ALL modes
-// because stderr is the correct log destination for both stdio and SSE.
-//
-// We check argv inline to determine mode, but redirect regardless of mode.
-const isSSE = process.argv.includes('sse');
-void isSSE; // used below
-
-const stderrWrite = process.stderr.write.bind(process.stderr);
-process.stdout.write = (chunk: any, ...args: any[]) => {
-  return (stderrWrite as any)(chunk, ...args);
-};
-
-// THIRD: Now safe to import everything else
 import { parseConfig } from './config.js';
 import { PipedriveClient } from './lib/pipedrive-client.js';
 import { ReferenceResolver } from './lib/reference-resolver/index.js';

@@ -27,29 +27,29 @@ export function createPersonTools(
       resolved.name = trimString(params.name as string, 'name');
     }
 
-    // Email — normalize to Pipedrive array-of-objects format
+    // Email — normalize to Pipedrive v2 array-of-objects format (plural key)
     if (params.email) {
       if (Array.isArray(params.email)) {
-        resolved.email = (params.email as string[]).map(e => ({
+        resolved.emails = (params.email as string[]).map(e => ({
           value: e,
           primary: false,
           label: 'work',
         }));
       } else {
-        resolved.email = [{ value: params.email as string, primary: true, label: 'work' }];
+        resolved.emails = [{ value: params.email as string, primary: true, label: 'work' }];
       }
     }
 
-    // Phone — normalize to Pipedrive array-of-objects format
+    // Phone — normalize to Pipedrive v2 array-of-objects format (plural key)
     if (params.phone) {
       if (Array.isArray(params.phone)) {
-        resolved.phone = (params.phone as string[]).map(p => ({
+        resolved.phones = (params.phone as string[]).map(p => ({
           value: p,
           primary: false,
           label: 'work',
         }));
       } else {
-        resolved.phone = [{ value: params.phone as string, primary: true, label: 'work' }];
+        resolved.phones = [{ value: params.phone as string, primary: true, label: 'work' }];
       }
     }
 
@@ -66,11 +66,15 @@ export function createPersonTools(
       );
     }
 
-    // Custom fields — resolve labels to keys, option labels to IDs
+    // Custom fields — nest under custom_fields for v2 API
     if (params.fields && typeof params.fields === 'object') {
+      const customFields: Record<string, unknown> = {};
       for (const [label, value] of Object.entries(params.fields as Record<string, unknown>)) {
         const key = fieldResolver.resolveInputField(label);
-        resolved[key] = fieldResolver.resolveInputValue(key, value);
+        customFields[key] = fieldResolver.resolveInputValue(key, value);
+      }
+      if (Object.keys(customFields).length > 0) {
+        resolved.custom_fields = customFields;
       }
     }
 
@@ -88,7 +92,7 @@ export function createPersonTools(
     const PASSTHROUGH = new Set(['id', 'add_time', 'update_time', 'visible_to']);
 
     // Internal ID fields that get resolved separately below
-    const SKIP = new Set(['user_id', 'org_id', 'creator_user_id']);
+    const SKIP = new Set(['user_id', 'org_id', 'creator_user_id', 'custom_fields']);
 
     for (const [key, value] of Object.entries(raw)) {
       if (PASSTHROUGH.has(key)) {
@@ -100,6 +104,14 @@ export function createPersonTools(
       }
       const outputKey = fieldResolver.getOutputKey(key);
       result[outputKey] = fieldResolver.resolveOutputValue(key, value);
+    }
+
+    // Unwrap custom_fields from v2 response format
+    if (raw.custom_fields && typeof raw.custom_fields === 'object') {
+      for (const [key, value] of Object.entries(raw.custom_fields as Record<string, unknown>)) {
+        const outputKey = fieldResolver.getOutputKey(key);
+        result[outputKey] = fieldResolver.resolveOutputValue(key, value);
+      }
     }
 
     // Resolve IDs to human-readable names
@@ -124,17 +136,17 @@ export function createPersonTools(
   async function toPersonSummary(raw: Record<string, unknown>): Promise<PersonSummary> {
     const userResolver = await resolver.getUserResolver();
 
-    // Extract primary email from Pipedrive's array-of-objects format
-    const primaryEmail = Array.isArray(raw.email)
-      ? (raw.email as Array<{ value: string; primary: boolean }>).find(e => e.primary)?.value
-        ?? (raw.email as Array<{ value: string }>)[0]?.value
-      : raw.email;
+    // Extract primary email from Pipedrive's array-of-objects format (v2 uses 'emails', v1 uses 'email')
+    const emailArr = (raw.emails ?? raw.email) as Array<{ value: string; primary: boolean }> | string | undefined;
+    const primaryEmail = Array.isArray(emailArr)
+      ? emailArr.find(e => e.primary)?.value ?? emailArr[0]?.value
+      : emailArr;
 
-    // Extract primary phone from Pipedrive's array-of-objects format
-    const primaryPhone = Array.isArray(raw.phone)
-      ? (raw.phone as Array<{ value: string; primary: boolean }>).find(p => p.primary)?.value
-        ?? (raw.phone as Array<{ value: string }>)[0]?.value
-      : raw.phone;
+    // Extract primary phone from Pipedrive's array-of-objects format (v2 uses 'phones', v1 uses 'phone')
+    const phoneArr = (raw.phones ?? raw.phone) as Array<{ value: string; primary: boolean }> | string | undefined;
+    const primaryPhone = Array.isArray(phoneArr)
+      ? phoneArr.find(p => p.primary)?.value ?? phoneArr[0]?.value
+      : phoneArr;
 
     return {
       id: raw.id as number,
@@ -519,9 +531,38 @@ export function createPersonTools(
 
         const respData = (response as any).data;
         const items = respData.data?.items ?? [];
-        const summaries = await Promise.all(
-          items.map((item: any) => toPersonSummary(item))
-        );
+
+        // Search endpoint returns { result_score, item: { id, name, email, phone, organization: {name}, owner: {id}, ... } }
+        // which differs from list endpoint shape — map directly to summary
+        const userResolver = await resolver.getUserResolver();
+        const summaries = items.map((wrapper: any) => {
+          const p = wrapper.item ?? wrapper;
+
+          // Search may return email/phone as arrays or strings
+          let email: string | null = null;
+          if (Array.isArray(p.email)) {
+            email = (p.email.find((e: any) => e.primary)?.value ?? p.email[0]?.value) || null;
+          } else if (typeof p.email === 'string') {
+            email = p.email || null;
+          }
+
+          let phone: string | null = null;
+          if (Array.isArray(p.phone)) {
+            phone = (p.phone.find((ph: any) => ph.primary)?.value ?? p.phone[0]?.value) || null;
+          } else if (typeof p.phone === 'string') {
+            phone = p.phone || null;
+          }
+
+          return {
+            id: p.id as number,
+            name: (p.name as string) ?? '',
+            email,
+            phone,
+            organization: p.organization?.name ?? (p.org_name as string) ?? null,
+            owner: p.owner?.id ? userResolver.resolveIdToName(p.owner.id) : '',
+            updated_at: (p.update_time as string) ?? '',
+          };
+        });
 
         const nextCursor = respData.additional_data?.next_cursor;
         return {

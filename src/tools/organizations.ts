@@ -41,11 +41,15 @@ export function createOrganizationTools(
       resolved.address = trimString(params.address as string, 'address');
     }
 
-    // Custom fields — resolve labels to keys, option labels to IDs
+    // Custom fields — nest under custom_fields for v2 API
     if (params.fields && typeof params.fields === 'object') {
+      const customFields: Record<string, unknown> = {};
       for (const [label, value] of Object.entries(params.fields as Record<string, unknown>)) {
         const key = fieldResolver.resolveInputField(label);
-        resolved[key] = fieldResolver.resolveInputValue(key, value);
+        customFields[key] = fieldResolver.resolveInputValue(key, value);
+      }
+      if (Object.keys(customFields).length > 0) {
+        resolved.custom_fields = customFields;
       }
     }
 
@@ -63,7 +67,7 @@ export function createOrganizationTools(
     const PASSTHROUGH = new Set(['id', 'add_time', 'update_time', 'visible_to']);
 
     // Internal ID fields that get resolved separately below
-    const SKIP = new Set(['user_id', 'creator_user_id']);
+    const SKIP = new Set(['user_id', 'creator_user_id', 'custom_fields']);
 
     for (const [key, value] of Object.entries(raw)) {
       if (PASSTHROUGH.has(key)) {
@@ -75,6 +79,14 @@ export function createOrganizationTools(
       }
       const outputKey = fieldResolver.getOutputKey(key);
       result[outputKey] = fieldResolver.resolveOutputValue(key, value);
+    }
+
+    // Unwrap custom_fields from v2 response format
+    if (raw.custom_fields && typeof raw.custom_fields === 'object') {
+      for (const [key, value] of Object.entries(raw.custom_fields as Record<string, unknown>)) {
+        const outputKey = fieldResolver.getOutputKey(key);
+        result[outputKey] = fieldResolver.resolveOutputValue(key, value);
+      }
     }
 
     // Resolve IDs to human-readable names
@@ -379,9 +391,20 @@ export function createOrganizationTools(
 
         const respData = (response as any).data;
         const items = respData.data?.items ?? [];
-        const summaries = await Promise.all(
-          items.map((item: any) => toOrgSummary(item))
-        );
+
+        // Search endpoint returns { result_score, item: { id, name, owner: {id}, address, ... } }
+        // which differs from list endpoint shape — map directly to summary
+        const userResolver = await resolver.getUserResolver();
+        const summaries = items.map((wrapper: any) => {
+          const o = wrapper.item ?? wrapper;
+          return {
+            id: o.id as number,
+            name: (o.name as string) ?? '',
+            owner: o.owner?.id ? userResolver.resolveIdToName(o.owner.id) : '',
+            address: (o.address as string) ?? null,
+            updated_at: (o.update_time as string) ?? '',
+          };
+        });
 
         const nextCursor = respData.additional_data?.next_cursor;
         return {

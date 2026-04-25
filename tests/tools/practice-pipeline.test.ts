@@ -92,7 +92,7 @@ describe('validateParams', () => {
 function mockFieldResolver() {
   return {
     resolveInputField: vi.fn((label: string) => {
-      if (label === 'BHG Practices') return 'abc_bhg_practices';
+      if (label === 'BHG Practice') return 'abc_bhg_practices';
       return label;
     }),
     resolveInputValue: vi.fn((_key: string, value: unknown) => {
@@ -307,7 +307,7 @@ function mockClient() {
 function mockResolverForHandler() {
   const fieldRes = {
     resolveInputField: vi.fn((label: string) => {
-      if (label === 'BHG Practices') return 'abc_bhg_practices';
+      if (label === 'BHG Practice') return 'abc_bhg_practices';
       throw new Error(`Unknown field '${label}'`);
     }),
     resolveInputValue: vi.fn((_key: string, value: unknown) => value),
@@ -531,7 +531,7 @@ describe('get-practice-pipeline handler', () => {
       })).rejects.toThrow("Pipeline 'BHG Pipeline' not found");
     });
 
-    it('fails when BHG Practices field not found', async () => {
+    it('fails when BHG Practice field not found', async () => {
       resolverMocks.fieldResolver.resolveInputField.mockImplementation(() => {
         throw new Error('Unknown field');
       });
@@ -543,7 +543,7 @@ describe('get-practice-pipeline handler', () => {
         wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
         wonQuarterStart: '2026-04-01',
         nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
-      })).rejects.toThrow("Custom field 'BHG Practices' not found");
+      })).rejects.toThrow("Custom field 'BHG Practice' not found");
     });
 
     it('fails when label field metadata is unavailable', async () => {
@@ -593,7 +593,7 @@ describe('get-practice-pipeline handler', () => {
         wonPeriodStart: '2026-04-01', wonPeriodEnd: '2026-04-17',
         wonQuarterStart: '2026-04-01',
         nextMonthEnd: '2026-05-31', nextThreeMonthsEnd: '2026-07-31',
-      })).rejects.toThrow("BHG Practices option 'Varicent' not found in field metadata");
+      })).rejects.toThrow("BHG Practice option 'Varicent' not found in field metadata");
     });
   });
 
@@ -609,7 +609,7 @@ describe('get-practice-pipeline handler', () => {
     expect(client.request).not.toHaveBeenCalled();
   });
 
-  it('handles unresolvable BHG Practices option ID on a deal as hard failure', async () => {
+  it('handles unresolvable BHG Practice option ID on a deal as hard failure', async () => {
     client.request.mockResolvedValueOnce(apiResponse([
       {
         id: 99, title: 'Bad Deal', value: 10000, status: 'open',

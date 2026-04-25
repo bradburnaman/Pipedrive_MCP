@@ -8,7 +8,7 @@ import type { CanonicalDeal, ClassificationResult, BucketAccumulator } from '../
 import { classifyDeals } from '../lib/pipeline-classifier.js';
 
 const CANONICAL_PRACTICES = ['Varicent', 'Xactly', 'CIQ/Emerging', 'Advisory', 'AI Product'] as const;
-const BHG_PRACTICES_FIELD_LABEL = 'BHG Practices';
+const BHG_PRACTICES_FIELD_LABEL = 'BHG Practice';
 const BHG_PIPELINE_NAME = 'BHG Pipeline';
 
 export interface ValidatedParams {
@@ -133,7 +133,7 @@ export function normalizeDeal(
     // alter practice membership and produce incorrect scorecard totals.
     if (unresolved.length > 0 || strings.length === 0) {
       throw new Error(
-        'A deal has an unresolvable BHG Practices value. Field metadata may be inconsistent.'
+        'A deal has an unresolvable BHG Practice value. Field metadata may be inconsistent.'
       );
     }
     practiceValues = strings;
@@ -312,7 +312,7 @@ export function createPracticePipelineTools(
     {
       name: 'get-practice-pipeline',
       category: 'read' as const,
-      description: 'Returns a practice-level pipeline summary for BHG Pipeline scorecard automation. Aggregates won, committed, upside, and pipeline health metrics by time period for the specified BHG Practices values. Not a general-purpose deal query tool.',
+      description: 'Returns a practice-level pipeline summary for BHG Pipeline scorecard automation. Aggregates won, committed, upside, and pipeline health metrics by time period for the specified BHG Practice values. Not a general-purpose deal query tool.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -320,7 +320,7 @@ export function createPracticePipelineTools(
             type: 'array',
             items: { type: 'string', enum: [...CANONICAL_PRACTICES] },
             minItems: 1,
-            description: 'BHG Practices values to include. Valid: Varicent, Xactly, CIQ/Emerging, Advisory, AI Product.',
+            description: 'BHG Practice values to include. Valid: Varicent, Xactly, CIQ/Emerging, Advisory, AI Product.',
           },
           monthEnd: { type: 'string', description: 'Ceiling for month commit/upside (YYYY-MM-DD)' },
           quarterEnd: { type: 'string', description: 'Ceiling for quarter commit/upside (YYYY-MM-DD)' },
@@ -345,7 +345,7 @@ export function createPracticePipelineTools(
         const fieldResolver = await resolver.getFieldResolver('deal');
         const pipelineResolver = await resolver.getPipelineResolver();
 
-        // Resolve BHG Practices field key
+        // Resolve BHG Practice field key
         let bhgPracticesKey: string;
         try {
           bhgPracticesKey = fieldResolver.resolveInputField(BHG_PRACTICES_FIELD_LABEL);
@@ -361,7 +361,7 @@ export function createPracticePipelineTools(
             fieldResolver.resolveInputValue(bhgPracticesKey, practice);
           } catch {
             throw new Error(
-              `BHG Practices option '${practice}' not found in field metadata. Verify the field options still include the expected canonical values.`
+              `BHG Practice option '${practice}' not found in field metadata. Verify the field options still include the expected canonical values.`
             );
           }
         }

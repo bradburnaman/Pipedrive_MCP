@@ -106,6 +106,16 @@ async function _normalizeApiCall(
   const knownMessage = ERROR_MESSAGES[response.status];
   if (knownMessage) throw makeError(response.status, knownMessage);
 
+  // For 400 errors, include the response body for debugging
+  if (response.status === 400) {
+    const body = response.data as Record<string, unknown> | undefined;
+    const detail = body?.error ?? body?.error_info ?? body?.message ?? '';
+    const msg = detail
+      ? `Pipedrive API returned 400: ${String(detail)}`
+      : 'Pipedrive API returned status 400.';
+    throw makeError(400, msg, body ?? undefined);
+  }
+
   throw makeError(response.status, `Pipedrive API returned status ${response.status}.`);
 }
 

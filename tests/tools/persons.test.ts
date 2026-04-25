@@ -220,9 +220,9 @@ describe('createPersonTools', () => {
       expect(body.name).toBe('John Smith');
       expect(body.org_id).toBe(501);
       expect(body.user_id).toBe(101);
-      // Email should be array of objects
-      expect(body.email).toEqual([{ value: 'john@example.com', primary: true, label: 'work' }]);
-      expect(body.phone).toEqual([{ value: '+1234567890', primary: true, label: 'work' }]);
+      // Email/phone should be array of objects with v2 plural keys
+      expect(body.emails).toEqual([{ value: 'john@example.com', primary: true, label: 'work' }]);
+      expect(body.phones).toEqual([{ value: '+1234567890', primary: true, label: 'work' }]);
 
       // Verify GET-after-write
       const getCall = client.request.mock.calls[1];
@@ -251,7 +251,7 @@ describe('createPersonTools', () => {
       });
 
       const postBody = client.request.mock.calls[0][3] as Record<string, unknown>;
-      expect(postBody.email).toEqual([
+      expect(postBody.emails).toEqual([
         { value: 'jane@work.com', primary: false, label: 'work' },
         { value: 'jane@personal.com', primary: false, label: 'work' },
       ]);
@@ -276,7 +276,7 @@ describe('createPersonTools', () => {
       });
 
       const postBody = client.request.mock.calls[0][3] as Record<string, unknown>;
-      expect(postBody.phone).toEqual([
+      expect(postBody.phones).toEqual([
         { value: '+1111111111', primary: false, label: 'work' },
         { value: '+2222222222', primary: false, label: 'work' },
       ]);
@@ -431,10 +431,22 @@ describe('createPersonTools', () => {
 
   describe('search-persons', () => {
     it('returns summary shape results', async () => {
-      const raw = makePipedrivePersonRaw();
+      // Search endpoint wraps each result in { item: { ... } } with owner/org as nested objects
+      const searchItem = {
+        result_score: 1.5,
+        item: {
+          id: 1,
+          name: 'John Smith',
+          email: [{ value: 'john@example.com', primary: true, label: 'work' }],
+          phone: [{ value: '+1234567890', primary: true, label: 'work' }],
+          organization: { name: 'Acme Corp' },
+          owner: { id: 101 },
+          update_time: '2026-03-28T10:00:00Z',
+        },
+      };
       client.request.mockResolvedValue({
         status: 200,
-        data: { data: { items: [raw] }, additional_data: {} },
+        data: { data: { items: [searchItem] }, additional_data: {} },
         headers: new Headers(),
       });
 
