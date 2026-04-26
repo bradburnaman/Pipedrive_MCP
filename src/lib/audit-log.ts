@@ -3,8 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
 import { configDir, assertPathSafe } from './path-safety.js';
-import { versionString } from './version-id.js';
-import { POLICY_HASH } from './policy.js';
+import { versionString, POLICY_HASH } from './version-id.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS audit_rows (

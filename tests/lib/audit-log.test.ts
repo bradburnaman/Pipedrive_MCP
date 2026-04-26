@@ -4,8 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { AuditLog, type InsertInput } from '../../src/lib/audit-log.js';
-import { POLICY_HASH } from '../../src/lib/policy.js';
-import { versionString } from '../../src/lib/version-id.js';
+import { POLICY_HASH, versionString } from '../../src/lib/version-id.js';
 
 let tmp: string;
 let dbPath: string;

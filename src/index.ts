@@ -5,8 +5,9 @@ import {
   getToken, evaluateRotation, envOverrideAllowed, permissionRepairEvents,
 } from './lib/secret-store.js';
 import { probeClaudeDesktopConfig } from './lib/claude-desktop-probe.js';
-import { VERSION_ID, versionString } from './lib/version-id.js';
+import { VERSION_ID, versionString, POLICY_HASH } from './lib/version-id.js';
 import { AuditLog } from './lib/audit-log.js';
+import { loadPolicy, recomputeHash, PolicyHashMismatchError } from './lib/capability-policy.js';
 import type { SafeDegradedRef } from './lib/safe-degraded-decorator.js';
 import { parseConfig } from './config.js';
 import { PipedriveClient } from './lib/pipedrive-client.js';
@@ -132,6 +133,32 @@ async function main() {
   const resolver = new ReferenceResolver(client, logger);
   const entityResolver = new EntityResolver(client, logger);
 
+  // --- Capability policy load (sec-10) ---
+  // Startup mismatch = exit 1 (operator intervention required before server starts).
+  // We need the auditLog to record the failure event, so create a temporary instance.
+  let policy;
+  try {
+    policy = loadPolicy();
+  } catch (err) {
+    if (err instanceof PolicyHashMismatchError) {
+      const startupAuditLog = new AuditLog();
+      startupAuditLog.insert({
+        tool: '_startup', category: 'policy', entity_type: null, entity_id: null,
+        status: 'failure', reason_code: 'POLICY_HASH_MISMATCH_STARTUP',
+        request_hash: '',
+        target_summary: `expected=${err.expected} got=${err.got}`,
+        diff_summary: null, idempotency_key: null,
+      });
+      startupAuditLog.close();
+      logger.fatal(
+        { expected: err.expected, got: err.got },
+        'POLICY_HASH_MISMATCH_STARTUP — refusing to start. Rebuild from clean source or investigate tampering.',
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
+
   // --- Audit log + safe-degraded gate (sec-06) ---
   const auditLog = new AuditLog();
   const safeDegraded: SafeDegradedRef = { value: false, reason: null };
@@ -159,6 +186,30 @@ async function main() {
     }
   }, 60_000);
   hotCheck.unref();
+
+  // 60s policy hot-check — runtime mismatch flips safe-degraded; does NOT exit
+  // (don't abruptly kill a running user session; startup already guards the entry point).
+  const policyHotCheck = setInterval(() => {
+    if (safeDegraded.value) return;
+    try {
+      const got = recomputeHash();
+      if (got !== POLICY_HASH) {
+        safeDegraded.value = true;
+        safeDegraded.reason = 'POLICY_HASH_MISMATCH_RUNTIME';
+        logger.error({ expected: POLICY_HASH, got }, 'POLICY_HASH_MISMATCH_RUNTIME — entering safe-degraded mode');
+        auditLog.insert({
+          tool: '_hot_check', category: 'policy', entity_type: null, entity_id: null,
+          status: 'safe_degraded_rejected', reason_code: 'POLICY_HASH_MISMATCH_RUNTIME',
+          request_hash: '',
+          target_summary: `expected=${POLICY_HASH} got=${got}`,
+          diff_summary: null, idempotency_key: null,
+        });
+      }
+    } catch (err) {
+      logger.error({ err }, 'Policy hot-check failed');
+    }
+  }, 60_000);
+  policyHotCheck.unref();
 
   // 15-minute idle re-verify — full walk catches modifications outside the
   // tail window. Only runs when the server has been quiet for 30s+.
