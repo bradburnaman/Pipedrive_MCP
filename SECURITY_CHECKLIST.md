@@ -117,14 +117,14 @@ The following test cases from the adversarial test plan are implemented and pass
 
 | # | Deferred control | Owner | Compensating control | Trigger to re-open | Accepted on | Signature |
 |---|---|---|---|---|---|---|
-| D-01 | Remote audit-log mirror (§10.3) | Brad | Local hash-chained audit; PD-004 documented as residual; **single-user local interactive only** | (a) second user adopts, (b) app runs on shared infra, (c) any A2-style scheduled path, (d) tenant compliance requirement, (e) any production deployment | 2026-04-26 | `<initials>` |
-| D-02 | Real-time anomaly alerts (§10.13) | Brad | Manual audit review; `npm run audit-verify` | Same as D-01 | 2026-04-26 | `<initials>` |
-| D-03 | Full §10.12 resource limits | Brad | Per-request 30s timeout; concurrency not limited | Multi-agent / high-rate usage | 2026-04-26 | `<initials>` |
-| D-04 | Pipedrive OAuth2 migration | Brad | Tier 4 secret with Keychain + AES-256-GCM encryption wrapper + 90-day rotation | Time-boxed in the next calendar quarter | 2026-04-26 | `<initials>` |
-| D-05 | Rollback rehearsal (§12.3) | Brad | Documented procedure in README | Before any multi-user deployment | 2026-04-26 | `<initials>` |
-| D-06 | Cross-platform Keychain review | Brad | macOS-only today | A second user adopts on Windows / Linux | 2026-04-26 | `<initials>` |
+| D-01 | Remote audit-log mirror (§10.3) | Brad | Local hash-chained audit; PD-004 documented as residual; **single-user local interactive only** | (a) second user adopts, (b) app runs on shared infra, (c) any A2-style scheduled path, (d) tenant compliance requirement, (e) any production deployment | 2026-04-26 | `BB` |
+| D-02 | Real-time anomaly alerts (§10.13) | Brad | Manual audit review; `npm run audit-verify` | Same as D-01 | 2026-04-26 | `BB` |
+| D-03 | Full §10.12 resource limits | Brad | Per-request 30s timeout; concurrency not limited | Multi-agent / high-rate usage | 2026-04-26 | `BB` |
+| D-04 | Pipedrive OAuth2 migration | Brad | Tier 4 secret with Keychain + AES-256-GCM encryption wrapper + 90-day rotation | Time-boxed in the next calendar quarter | 2026-04-26 | `BB` |
+| D-05 | Rollback rehearsal (§12.3) | Brad | Documented procedure in README | Before any multi-user deployment | 2026-04-26 | `BB` |
+| D-06 | Cross-platform Keychain review | Brad | macOS-only today | A second user adopts on Windows / Linux | 2026-04-26 | `BB` |
 
-Replace `<initials>` at merge time. Re-sign each row at every full review per architecture §16.
+Replace `BB` at merge time. Re-sign each row at every full review per architecture §16.
 
 ## Open follow-ups
 
