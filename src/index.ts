@@ -1,12 +1,14 @@
 // src/index.ts
 
-import { assertConfigDirSafe, assertCwdClean } from './lib/path-safety.js';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { assertConfigDirSafe, assertCwdClean, configDir } from './lib/path-safety.js';
 import {
   getToken, evaluateRotation, envOverrideAllowed, permissionRepairEvents,
 } from './lib/secret-store.js';
 import { probeClaudeDesktopConfig } from './lib/claude-desktop-probe.js';
 import { VERSION_ID, versionString, POLICY_HASH } from './lib/version-id.js';
-import { AuditLog } from './lib/audit-log.js';
+import { AuditLog, type InsertInput } from './lib/audit-log.js';
 import { loadPolicy, recomputeHash, PolicyHashMismatchError } from './lib/capability-policy.js';
 import { KillSwitch } from './lib/kill-switch.js';
 import { ReadBudget } from './lib/read-budget.js';
@@ -19,6 +21,15 @@ import { EntityResolver } from './lib/entity-resolver.js';
 import { createServer } from './server.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import pino from 'pino';
+
+function writeExceptionsLog(entry: string): void {
+  try {
+    const path = join(configDir(), 'exceptions.log');
+    appendFileSync(path, `${new Date().toISOString()} ${entry}\n`, { mode: 0o600 });
+  } catch {
+    // Best effort — don't let a logging failure crash the server.
+  }
+}
 
 async function main() {
   assertConfigDirSafe();
@@ -56,20 +67,54 @@ async function main() {
     'Pipedrive MCP Server starting',
   );
 
+  // --- Capability policy load (sec-10) — moved before token loading so a tampered
+  // policy file causes exit 1 before any network call is made.
+  // BHG_CAPABILITIES_PATH overrides the path for integration testing.
+  const capabilitiesPath = process.env.BHG_CAPABILITIES_PATH;
+  let policy;
+  try {
+    policy = loadPolicy(capabilitiesPath);
+  } catch (err) {
+    if (err instanceof PolicyHashMismatchError) {
+      const startupAuditLog = new AuditLog();
+      startupAuditLog.insert({
+        tool: '_startup', category: 'policy', entity_type: null, entity_id: null,
+        status: 'failure', reason_code: 'POLICY_HASH_MISMATCH_STARTUP',
+        request_hash: '',
+        target_summary: `expected=${err.expected} got=${err.got}`,
+        diff_summary: null, idempotency_key: null,
+      });
+      startupAuditLog.close();
+      logger.fatal(
+        { expected: err.expected, got: err.got },
+        'POLICY_HASH_MISMATCH_STARTUP — refusing to start. Rebuild from clean source or investigate tampering.',
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
+
   // --- Token resolution (Keychain first; env override is restricted) ---
+  // Deferred audit events — written to the audit log once it is initialized below.
+  const deferredAudit: InsertInput[] = [];
+
   let token: string;
   let issuedAt: string | null = null;
-  let envOverrideReason: string | null = null;
 
   const ov = envOverrideAllowed();
   if (ov.allowed && process.env.PIPEDRIVE_API_TOKEN) {
     token = process.env.PIPEDRIVE_API_TOKEN.trim();
-    envOverrideReason = ov.reason ?? null;
-    if (envOverrideReason && envOverrideReason.startsWith('break_glass:')) {
-      process.stderr.write(
-        `WARNING: break-glass env override active. Reason: ${envOverrideReason.slice('break_glass:'.length)}\n`,
-      );
-      // sec-06 will also write a BREAK_GLASS_ENV_OVERRIDE audit row + exceptions.log entry.
+    const reason = ov.reason ?? null;
+    if (reason?.startsWith('break_glass:')) {
+      const bgReason = reason.slice('break_glass:'.length);
+      process.stderr.write(`WARNING: break-glass env override active. Reason: ${bgReason}\n`);
+      writeExceptionsLog(`BREAK_GLASS_ENV_OVERRIDE reason="${bgReason}"`);
+      deferredAudit.push({
+        tool: '_startup', category: 'break_glass', entity_type: null, entity_id: null,
+        status: 'success', reason_code: 'BREAK_GLASS_ENV_OVERRIDE',
+        request_hash: '', target_summary: null,
+        diff_summary: `reason=${bgReason}`, idempotency_key: null,
+      });
     }
   } else {
     const entry = await getToken();
@@ -95,7 +140,13 @@ async function main() {
         );
         process.exit(1);
       }
-      // sec-06 will write STALE_TOKEN_EXCEPTION audit row + exceptions.log entry.
+      writeExceptionsLog(`STALE_TOKEN_EXCEPTION ageDays=${Math.floor(r.ageDays)} reason="${staleReason}"`);
+      deferredAudit.push({
+        tool: '_startup', category: 'break_glass', entity_type: null, entity_id: null,
+        status: 'success', reason_code: 'STALE_TOKEN_EXCEPTION',
+        request_hash: '', target_summary: `age_days=${Math.floor(r.ageDays)}`,
+        diff_summary: `reason=${staleReason}`, idempotency_key: null,
+      });
     }
     if (r.status === 'due' || r.status === 'degraded') {
       process.stderr.write(
@@ -112,12 +163,22 @@ async function main() {
       `env block(s): ${probe.servers.join(', ')}. Remove the env block — this ` +
       'server reads the token from Keychain.\n',
     );
-    // sec-06 will also write a CLAUDE_DESKTOP_TOKEN_IN_CONFIG audit row.
   }
 
-  // sec-06 will replay permissionRepairEvents into PERMISSION_REPAIRED audit rows.
+  // --- Permission repair events ---
   if (permissionRepairEvents.length > 0) {
     logger.warn({ events: permissionRepairEvents }, 'Sensitive file permissions repaired at startup');
+    for (const evt of permissionRepairEvents) {
+      const failed = evt.after === -1;
+      deferredAudit.push({
+        tool: '_startup', category: 'policy', entity_type: null, entity_id: null,
+        status: failed ? 'failure' : 'success',
+        reason_code: failed ? 'PERMISSION_REPAIR_FAILED' : 'PERMISSION_REPAIRED',
+        request_hash: '',
+        target_summary: `${evt.path}: mode ${evt.before.toString(8)} -> ${failed ? 'FAILED' : evt.after.toString(8)}`,
+        diff_summary: null, idempotency_key: null,
+      });
+    }
   }
 
   // Initialize client with logger
@@ -136,32 +197,6 @@ async function main() {
   const resolver = new ReferenceResolver(client, logger);
   const entityResolver = new EntityResolver(client, logger);
 
-  // --- Capability policy load (sec-10) ---
-  // Startup mismatch = exit 1 (operator intervention required before server starts).
-  // We need the auditLog to record the failure event, so create a temporary instance.
-  let policy;
-  try {
-    policy = loadPolicy();
-  } catch (err) {
-    if (err instanceof PolicyHashMismatchError) {
-      const startupAuditLog = new AuditLog();
-      startupAuditLog.insert({
-        tool: '_startup', category: 'policy', entity_type: null, entity_id: null,
-        status: 'failure', reason_code: 'POLICY_HASH_MISMATCH_STARTUP',
-        request_hash: '',
-        target_summary: `expected=${err.expected} got=${err.got}`,
-        diff_summary: null, idempotency_key: null,
-      });
-      startupAuditLog.close();
-      logger.fatal(
-        { expected: err.expected, got: err.got },
-        'POLICY_HASH_MISMATCH_STARTUP — refusing to start. Rebuild from clean source or investigate tampering.',
-      );
-      process.exit(1);
-    }
-    throw err;
-  }
-
   const killSwitch = new KillSwitch();
   const readBudget = new ReadBudget(policy.read_budgets);
   const bulkDetector = new BulkDetector(
@@ -176,11 +211,15 @@ async function main() {
   if (!initialVerify.ok) {
     safeDegraded.value = true;
     safeDegraded.reason = 'AUDIT_CHAIN_BROKEN';
-    // Emit to stderr only — never write the failure event to the tampered DB.
     logger.error(
       { breakAtId: initialVerify.breakAtId },
       'AUDIT_CHAIN_BROKEN — entering safe-degraded mode. Writes disabled; reads carry _security_notice. Run `npm run audit-verify` for details.',
     );
+  }
+
+  // Write deferred startup events now that the audit log is ready.
+  for (const evt of deferredAudit) {
+    auditLog.insert(evt);
   }
 
   const activity = { lastActivityMs: Date.now() };
@@ -197,12 +236,13 @@ async function main() {
   }, 60_000);
   hotCheck.unref();
 
-  // 60s policy hot-check — runtime mismatch flips safe-degraded; does NOT exit
-  // (don't abruptly kill a running user session; startup already guards the entry point).
+  // Policy hot-check — runtime mismatch flips safe-degraded; does NOT exit.
+  // BHG_POLICY_HOT_CHECK_MS overrides the interval for integration testing.
+  const policyHotCheckMs = Number(process.env.BHG_POLICY_HOT_CHECK_MS) || 60_000;
   const policyHotCheck = setInterval(() => {
     if (safeDegraded.value) return;
     try {
-      const got = recomputeHash();
+      const got = recomputeHash(capabilitiesPath);
       if (got !== POLICY_HASH) {
         safeDegraded.value = true;
         safeDegraded.reason = 'POLICY_HASH_MISMATCH_RUNTIME';
@@ -218,7 +258,7 @@ async function main() {
     } catch (err) {
       logger.error({ err }, 'Policy hot-check failed');
     }
-  }, 60_000);
+  }, policyHotCheckMs);
   policyHotCheck.unref();
 
   // 15-minute idle re-verify — full walk catches modifications outside the
