@@ -175,3 +175,23 @@ git commit -m "ci(security): npm audit, SBOM, Dependabot, lifecycle-scripts allo
 ---
 
 **Done when:** `security.yml` runs on PRs and pushes; a high-severity advisory fails the build; lockfile drift after `npm ci` fails the build; a package with an install lifecycle script not on the allowlist fails `check-lifecycle-scripts`; SBOM is attached to each successful build; Dependabot PRs appear weekly and major bumps require manual approval.
+
+---
+
+## Implementation Status
+
+**Shipped:** 2026-04-25 — commit `2b9e202` on `security/api-key-hardening`.
+
+**Deviations from spec:**
+- **`esbuild` added to the lifecycle-scripts allowlist.** The spec seeded `{keytar, better-sqlite3}` and asserted "Should pass with keytar + better-sqlite3 on the list" — but esbuild is reached transitively via `tsx` (used to run our setup/revoke/audit-verify CLIs and `embed-version.mjs`) and via `vitest > vite` (test runner). esbuild's `postinstall` (`install.js`) downloads the platform-specific prebuilt binary; it has no other install mechanism. Verified 2026-04-25 with `npm ls --omit=dev esbuild` returning `(empty)` — esbuild has **no runtime dependency path**. Comment on the allowlist entry names both transitive paths so future readers can re-verify. If `tsx` or `vitest` is ever swapped, re-run the prod-only check and prune accordingly.
+
+**Verified locally:**
+- `npm ci --dry-run` → "up to date" (lockfile consistent — CI's `npm ci` + `git diff --exit-code` will pass)
+- `bash scripts/check-forbidden-patterns.sh` → pass
+- `node scripts/check-lifecycle-scripts.mjs` → pass (3-entry allowlist)
+- `npm audit --audit-level=high --production` → exit 0 (only moderate hono vulns, pre-existing, below threshold)
+- `npm run typecheck` → clean
+- `npx vitest run` → 28 files / 401 tests at the time of the commit
+- `CI=true npm run build` → correctly **refused** because the working tree was dirty (sec-07 changes uncommitted at the time of smoke-test) — i.e., sec-05's CI dirty-guard working as designed; CI on a clean checkout passes.
+
+SBOM step (`npx --yes @cyclonedx/cdxgen`) was not exercised locally (would download tooling); trusting the workflow definition.

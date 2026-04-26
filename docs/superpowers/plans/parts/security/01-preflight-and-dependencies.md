@@ -165,3 +165,9 @@ git commit -m "chore(security): add keytar + better-sqlite3, remove dotenv, scaf
 ---
 
 **Done when:** `dotenv` is gone, `keytar` + `better-sqlite3` are installed with pinned versions, `npm run setup` / `revoke` / `audit-verify` exit cleanly with "not yet implemented," typecheck + build + test all green.
+
+---
+
+## Implementation Status
+
+**Shipped:** commit `17e5160` on `security/api-key-hardening`. As-spec, no deviations.

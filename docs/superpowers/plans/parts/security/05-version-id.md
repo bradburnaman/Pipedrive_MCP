@@ -129,3 +129,15 @@ git commit -m "feat(security): build-time VERSION_ID embedded and logged at star
 ---
 
 **Done when:** `npm run build` regenerates `version-id.ts` with fresh SHA; `versionString()` works; startup log emits the version; CI dirty-build guard path is smoke-tested.
+
+---
+
+## Implementation Status
+
+**Shipped:** 2026-04-25 — commit `1a88b0b` on `security/api-key-hardening`.
+
+**Deviations from spec:** none.
+
+**Verified:** 4 unit tests; CI dirty-guard smoke-tested all three branches (refuse on `CI=true` + dirty, allow on `CI=true` + dirty + `BHG_ALLOW_DIRTY_BUILD=1`, allow on non-CI dirty). The `CI=true npm run build` step in sec-07's `security.yml` workflow exercises this guard on every PR/push.
+
+**Note:** This part deliberately did NOT add `POLICY_HASH` to the generator output. `POLICY_HASH` lives in `src/lib/policy.ts` (added in sec-06a as a placeholder) and is replaced by sec-10. Reason: the policy hash is computed from a committed capabilities document, not from git state, so it doesn't belong in the build-time generator.

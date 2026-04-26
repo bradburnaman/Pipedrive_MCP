@@ -182,3 +182,18 @@ git commit -m "feat(security): log redaction, token-pattern sanitization, forbid
 ---
 
 **Done when:** tests pass; a probe confirms the token is never emitted under common logger shapes; `check-forbidden-patterns.sh` is part of the `security:check` script and passes on current main.
+
+---
+
+## Implementation Status
+
+**Shipped:** 2026-04-25 — commit `b1b4333` on `security/api-key-hardening`.
+
+**Deviations from spec:**
+- Rule 2 of `check-forbidden-patterns.sh` (curl-piped-to-shell detection) was self-matching because the script's own comments described the pattern. Fixed with `--exclude='check-forbidden-patterns.sh'`.
+
+**Verified:** 11 unit tests for `redactUrl` + `stripTokenPattern`; one-shot Pino redact probe (created and deleted under `scripts/`) confirmed all five would-leak fields (`apiToken`, `api_token`, `url` with `?api_token=…`, `headers.authorization`, `config.apiToken`) are stripped from log output.
+
+**Open follow-ups (non-blocking, captured in memory):**
+- Add `stripTokenPattern` tests for URL-encoded tokens (`api_token=%61%62…`) and mixed-case 40-hex variants.
+- Integration test confirming `stripTokenPattern` runs after stringify across all error paths (nested arrays/objects already unit-tested).
