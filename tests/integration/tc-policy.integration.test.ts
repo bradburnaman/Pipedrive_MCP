@@ -41,9 +41,12 @@ describe('TC-POLICY-1a — startup hash mismatch → exit 1', () => {
     };
     writeFileSync(tamperedPath, JSON.stringify(tampered));
 
-    // Spawn the server — it must exit 1 quickly (policy check is before token loading)
+    // Override HOME to a temp dir so the spawned server's startup-failure
+    // audit row goes to an isolated audit.db, not the user's real
+    // ~/.bhg-pipedrive-mcp/audit.db (which a live Claude Desktop instance
+    // may already hold open, causing SQLITE_IOERR_SHORT_READ contention).
     const result = spawnProcess('npx', ['tsx', 'src/index.ts'], {
-      env: { BHG_CAPABILITIES_PATH: tamperedPath },
+      env: { BHG_CAPABILITIES_PATH: tamperedPath, HOME: tmpDir },
       timeoutMs: 8_000,
     });
 
