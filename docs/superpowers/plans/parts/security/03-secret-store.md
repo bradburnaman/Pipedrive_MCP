@@ -476,3 +476,11 @@ git commit -m "feat(security): Keychain-backed store, restricted env override, r
 ---
 
 **Done when:** `npm run setup` stores a token end-to-end; a fresh `npm start` reads the token from Keychain without any env var; running with `BHG_PIPEDRIVE_ALLOW_ENV_OVERRIDE=1` **alone** ignores the env var (the flag is retired); `NODE_ENV=test` or `CI=true` or break-glass-with-reason allows env override; rotation status `fresh`/`due`/`degraded`/`refuse` mapped correctly; `salt.bin` loose-perms repaired with an audit event; Claude Desktop config probe emits a warning when a hardcoded token is detected; `npm run revoke` wipes Keychain + salt + archives audit DB; ACL probe result documented; round-trip and tamper tests pass.
+
+---
+
+## Implementation Status
+
+**Shipped:** commit `a67d930` on `security/api-key-hardening`. As-spec.
+
+**Token rotation event:** the previous Pipedrive API token had been replicating to OneDrive via the synced project folder and was treated as leaked. New token issued 2026-04-25 and stored encrypted in macOS Keychain. The project was relocated out of OneDrive to `~/Documents/Apps/Pipedrive_MCP/` on the same date.

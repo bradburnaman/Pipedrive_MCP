@@ -125,7 +125,6 @@ export interface PipedriveStage {
 export type ToolCategory = 'read' | 'create' | 'update' | 'delete';
 
 export interface ServerConfig {
-  apiToken: string;
   port: number;
   transport: 'stdio' | 'sse';
   enabledCategories: Set<ToolCategory>;

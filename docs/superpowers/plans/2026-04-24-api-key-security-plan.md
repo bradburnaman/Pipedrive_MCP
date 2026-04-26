@@ -10,6 +10,33 @@ This release is a **local-hardening milestone**, not full architecture complianc
 
 **Tech additions:** `keytar` (runtime), `better-sqlite3` (runtime — moved from devDeps), build-time version + policy hash generator, committed `capabilities.json`.
 
+## Implementation Status (as of 2026-04-25)
+
+Branch: `security/api-key-hardening`. See per-part files for shipped-status footers with commit SHAs and deviation notes.
+
+| Part | Status | Commit | Notes |
+|------|--------|--------|-------|
+| sec-01 | shipped | `17e5160` | as-spec |
+| sec-02 | shipped | `2179621` | as-spec |
+| sec-03 | shipped | `a67d930` | as-spec; token rotated 2026-04-25 |
+| sec-04 | shipped | `b1b4333` | as-spec; minor self-exclusion in forbidden-patterns script |
+| sec-05 | shipped | `1a88b0b` | as-spec |
+| sec-07 | shipped | `2b9e202` | esbuild added to lifecycle-scripts allowlist (transitive dev-only) |
+| sec-06a | shipped | `b72afd4` | core: `AuditLog` class + `audit-verify` CLI + `policy.ts` placeholder |
+| sec-06b | shipped | `e5e62cc` | wiring: central dispatch in `server.ts` (deviation from per-handler middleware spec); idle re-verify; safe-degraded gate |
+| sec-06 | **incomplete** | — | `target_summary`/`diff_summary` deferred to sec-10; `POLICY_HASH = 'PENDING_SEC_10'`; sec-10 must populate or `SECURITY_CHECKLIST.md` must accept NULL summaries for non-destructive writes |
+| sec-10 | not started | — | discharges sec-06 deferred items |
+| sec-09 | not started | — | adversarial tests; depends on sec-10 |
+| sec-08 | not started | — | docs cutover; merges last |
+
+**Key architecture deviations vs. spec:**
+1. **Central dispatch wrapping (sec-06b)**: `server.ts:dispatchToolCall` audits writes and decorates reads at the single SDK request handler; the spec proposed wrapping every tool handler with an `auditWrite()` HOF. Same security guarantee; no per-tool churn.
+2. **`target_summary` / `diff_summary` deferred to sec-10**: schema accepts NULL today; `tests/lib/audit-log.test.ts` has a `TODO(sec-10)` assertion; three call sites in `src/server.ts` are marked `TODO(sec-10)`.
+3. **`POLICY_HASH` placeholder**: `src/lib/policy.ts` exports the literal string `'PENDING_SEC_10'`. sec-10 replaces it with the SHA-256 of the canonical capability policy (one-line edit).
+4. **esbuild in lifecycle-scripts allowlist (sec-07)**: needed because `tsx` and `vitest > vite` pull esbuild's binary postinstall. Verified dev-only via `npm ls --omit=dev esbuild` (empty).
+
+**Production-readiness gate** (per spec §16): even with all 10 parts shipped, this remains restricted to single-user local interactive use until a remote audit-log mirror exists. Do not characterize the merged branch as "production-ready" without that mirror.
+
 ## Pre-work (manual, non-code — BEFORE Part sec-01)
 
 **Rotate the Pipedrive API token in Pipedrive UI (Settings → Personal preferences → API → Regenerate).** The current token has been replicating to OneDrive via the synced project folder and must be treated as leaked. Record the issuance date.

@@ -240,3 +240,9 @@ git commit -m "feat(security): path-safety refuses sync-root config + CWD-forbid
 ## Developer escape hatch (documented, not code)
 
 If a `*.log` or `*.db` file in CWD is from unrelated tooling (e.g., a debug log, a test SQLite DB), **move it out of CWD** — do not add an override flag or allowlist. The refusal is a deliberate forcing function. Document the relocation in a commit message so future contributors understand why the file is where it is. The only two files the app itself ever creates at these paths live under `~/.bhg-pipedrive-mcp/`, which is excluded from the CWD check.
+
+---
+
+## Implementation Status
+
+**Shipped:** commit `2179621` on `security/api-key-hardening`. As-spec, no deviations.

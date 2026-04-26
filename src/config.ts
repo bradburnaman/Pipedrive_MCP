@@ -3,10 +3,8 @@ import type { ServerConfig, ToolCategory } from './types.js';
 const VALID_CATEGORIES: ToolCategory[] = ['read', 'create', 'update', 'delete'];
 
 export function parseConfig(args: string[] = process.argv.slice(2)): ServerConfig {
-  const apiToken = (process.env.PIPEDRIVE_API_TOKEN ?? '').trim();
-  if (!apiToken) {
-    throw new Error('PIPEDRIVE_API_TOKEN environment variable is required');
-  }
+  // Token resolution lives in src/index.ts (Keychain-first, restricted env override).
+  // parseConfig only handles non-secret runtime configuration.
 
   let transport: 'stdio' | 'sse' = 'stdio';
   let cliPort: number | undefined;
@@ -46,7 +44,7 @@ export function parseConfig(args: string[] = process.argv.slice(2)): ServerConfi
   const logLevelEnv = process.env.PIPEDRIVE_LOG_LEVEL?.trim();
   const logLevel = logLevelEnv === 'debug' ? 'debug' : 'info';
 
-  return { apiToken, port, transport, enabledCategories, disabledTools, logLevel };
+  return { port, transport, enabledCategories, disabledTools, logLevel };
 }
 
 export function isToolEnabled(

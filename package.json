@@ -14,7 +14,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "setup": "tsx src/bin/setup.ts",
+    "revoke": "tsx src/bin/revoke.ts",
+    "audit-verify": "tsx src/bin/audit-verify.ts",
+    "kill-switch": "tsx src/bin/kill-switch.ts",
+    "prebuild": "node scripts/embed-version.mjs",
+    "security:check": "bash scripts/check-forbidden-patterns.sh && node scripts/check-lifecycle-scripts.mjs && npm audit --audit-level=high --production"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -22,12 +28,14 @@
   "private": true,
   "dependencies": {
     "@modelcontextprotocol/sdk": "~1.29.0",
-    "dotenv": "^17.3.1",
-    "fastest-levenshtein": "^1.0.16",
-    "pino": "^10.3.1",
-    "striptags": "^3.2.0"
+    "better-sqlite3": "~11.3.0",
+    "fastest-levenshtein": "1.0.16",
+    "keytar": "~7.9.0",
+    "pino": "~10.3.1",
+    "striptags": "~3.2.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^25.5.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2",

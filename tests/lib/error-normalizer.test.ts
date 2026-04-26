@@ -108,4 +108,33 @@ describe('normalizeApiCall', () => {
   it('handles unknown status codes', async () => {
     await expect(normalizeApiCall(async () => ({ status: 418, data: {} }))).rejects.toMatchObject({ code: 418, message: 'Pipedrive API returned status 418.' });
   });
+
+  it('strips 40-hex token patterns from 400-error messages', async () => {
+    const token = '0123456789abcdef0123456789abcdef01234567';
+    const fn = async () => ({ status: 400, data: { error: `bad request near ${token} oops` } });
+    await expect(normalizeApiCall(fn)).rejects.toMatchObject({
+      code: 400,
+      message: expect.not.stringContaining(token),
+    });
+    await expect(normalizeApiCall(fn)).rejects.toMatchObject({
+      code: 400,
+      message: expect.stringContaining('[REDACTED-40HEX]'),
+    });
+  });
+
+  it('strips 40-hex token patterns from 400-error details', async () => {
+    const token = 'fedcba9876543210fedcba9876543210fedcba98';
+    const fn = async () => ({
+      status: 400,
+      data: { error: 'bad', context: `token ${token} embedded`, nested: { also: token } },
+    });
+    try {
+      await normalizeApiCall(fn);
+    } catch (e) {
+      const err = e as { details?: Record<string, unknown> };
+      const serialized = JSON.stringify(err.details);
+      expect(serialized).not.toContain(token);
+      expect(serialized).toContain('[REDACTED-40HEX]');
+    }
+  });
 });

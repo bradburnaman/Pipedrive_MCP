@@ -18,7 +18,7 @@
 - [ ] **Step 1: Initialize package.json**
 
 ```bash
-cd /Users/brad/Library/CloudStorage/OneDrive-TheBlueHorizonsGroup/Apps/Pipedrive_MCP
+cd /Users/bburnaman/Documents/Apps/Pipedrive_MCP
 npm init -y
 ```
 

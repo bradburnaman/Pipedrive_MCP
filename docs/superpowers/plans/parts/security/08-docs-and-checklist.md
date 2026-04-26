@@ -221,7 +221,7 @@ Create at repo root (i.e. `/Users/.../Pipedrive_MCP/SECURITY_CHECKLIST.md`). Use
 ```markdown
 # Pipedrive MCP — Security Checklist
 
-**Architecture reference:** `/Users/bburnaman/Library/CloudStorage/OneDrive-TheBlueHorizonsGroupLLC/Apps/Microsoft 365 Send MCP/docs/bhg-app-security-architecture.md` v1.3
+**Architecture reference:** `/Users/bburnaman/Documents/Apps/Microsoft 365 Send MCP/docs/bhg-app-security-architecture.md` v1.3
 **App archetype:** A1-analogous (local stdio MCP, user-delegated via long-lived Pipedrive API token)
 **Design spec:** `docs/superpowers/specs/2026-04-24-api-key-security-design.md`
 **Plan:** `docs/superpowers/plans/2026-04-24-api-key-security-plan.md`

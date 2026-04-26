@@ -2,7 +2,7 @@
 
 **Version:** 1.2 — 2026-04-24
 **Author:** Brad Burnaman (owner) / Claude Code
-**Companion to:** `/Users/bburnaman/Library/CloudStorage/OneDrive-TheBlueHorizonsGroupLLC/Apps/Microsoft 365 Send MCP/docs/bhg-app-security-architecture.md` v1.3, `bhg-app-threat-model.md` v1.0, `bhg-app-adversarial-test-plan.md` v1.0
+**Companion to:** `/Users/bburnaman/Documents/Apps/Microsoft 365 Send MCP/docs/bhg-app-security-architecture.md` v1.3, `bhg-app-threat-model.md` v1.0, `bhg-app-adversarial-test-plan.md` v1.0
 
 **Parent design:** `docs/superpowers/specs/2026-03-30-pipedrive-mcp-design.md`
 

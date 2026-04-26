@@ -492,3 +492,43 @@ git commit -m "feat(security): hash-chained SQLite audit log with safe-degraded 
 ---
 
 **Done when:** writes produce audit rows; `npm run audit-verify` passes on a freshly populated DB; direct SQL tampering causes verification failure and next startup enters safe-degraded mode (writes rejected with 503, reads unaffected); tests cover all tamper patterns.
+
+---
+
+## Implementation Status
+
+**Shipped in two commits:**
+- **sec-06a** — 2026-04-25 — commit `b72afd4` — cryptographic core in isolation
+- **sec-06b** — 2026-04-25 — commit `e5e62cc` — wiring into the dispatch and startup
+
+**Sec-06 is NOT marked complete.** It is **incomplete pending the sec-10 contract** — see "Open obligations" below.
+
+### What 6a delivered
+- `src/lib/audit-log.ts` — `AuditLog` class with `insert`, `verifyChain`, `verifyTail(n)`
+- `src/lib/policy.ts` — `POLICY_HASH = 'PENDING_SEC_10'` placeholder (one-line file)
+- `src/bin/audit-verify.ts` — CLI: full chain walk, `--acknowledge-and-reset` archives broken DB and emits `CHAIN_RESET` row
+- `tests/lib/audit-log.test.ts` — 15 tests covering round-trip, version_id/POLICY_HASH propagation, 5 tamper patterns, verifyTail in-window-catches/out-of-window-misses semantics, schema-nullability probe with `TODO(sec-10)` marker
+
+### What 6b delivered
+- `src/lib/audit-middleware.ts` — `sanitizeParams` (PII redaction), `canonicalJson` (sorted keys), `requestHash`, `extractEntityId` (best-effort)
+- `src/lib/safe-degraded-decorator.ts` — `decorateReadResponse` prepends `_security_notice` when chain is broken
+- `src/server.ts` — extracted `dispatchToolCall` for direct testing; central dispatch now bumps `activity.lastActivityMs`, gates writes on safe-degraded (returns 503 + `safe_degraded_rejected` audit row), audits success / error-envelope / exception, decorates read results when degraded
+- `src/index.ts` — constructs `AuditLog`, runs `verifyChain` at startup → safe-degraded if broken, 60s `verifyTail(100)` hot-check, 15-minute `verifyChain` idle re-verify (only when 30s+ quiet), closes audit on shutdown
+- `tests/lib/audit-middleware.test.ts` (20 tests), `tests/lib/safe-degraded-decorator.test.ts` (6 tests), `tests/server-dispatch.test.ts` (10 integration tests through `dispatchToolCall` — read-no-audit, write-success/error-envelope/throw, safe-degraded write rejection, no handler invocation when rejected, chain integrity preserved across rejections, `_security_notice` on read)
+
+### Architecture deviations from spec
+
+1. **Central dispatch wrapping** instead of per-handler `auditWrite()` HOF. The MCP SDK already routes every call through one `CallToolRequestSchema` handler in `server.ts`. The dispatcher branches on `tool.category` (already typed as `'read' | 'create' | 'update' | 'delete'` in `src/types.ts`). Same security guarantee, ~9 fewer files touched, no per-tool churn. Spec was likely written before noticing this single-dispatch shape.
+2. **Per-tool `target_summary` / `diff_summary` deferred** to sec-10 (Brad's call 2026-04-25). They require before/after state and per-tool field knowledge that is better landed alongside sec-10's confirmation flow. Schema accepts NULL; `tests/lib/audit-log.test.ts` has a `TODO(sec-10)` assertion that schema permits NULL summaries; three call sites in `src/server.ts` are marked `TODO(sec-10)`.
+3. **`POLICY_HASH` placeholder** in `src/lib/policy.ts` exports the literal `'PENDING_SEC_10'`. sec-10 replaces it with the SHA-256 of the canonical capability policy document. Audit rows currently carry that placeholder string, not a real hash.
+4. **`CHAIN_RESET` audit row uses `category: 'policy'`** rather than the spec's `'update'`. A chain reset is an audit-policy event, not a data update. `'policy'` is in the defined `AuditCategory` union.
+5. **Genesis marker hardened to `sha256('GENESIS')`** (fixed, version-independent). The spec's first draft mixed `versionString()` into the genesis marker, which would break the chain across builds; the spec itself flags this and prescribes the fix. Implemented per the corrected version.
+6. **`server.on('request', ...)` replaced** with a `lastActivityMs` bump inside the dispatcher — that event doesn't exist on `McpServer`.
+
+### Open obligations (must close before sec-06 is "complete")
+
+Per Brad 2026-04-25 — sec-06 is not done until **either**:
+- (a) sec-10 populates `target_summary` and `diff_summary` for all create/update/delete writes (per-tool helpers), and replaces `POLICY_HASH` placeholder with the real policy SHA-256; **or**
+- (b) `SECURITY_CHECKLIST.md` (created in sec-08) explicitly accepts NULL summaries for non-destructive writes and defers a real `POLICY_HASH` to a later milestone with a deferred-control owner-acceptance signature.
+
+When (a) is taken, the `TODO(sec-10)` assertion in `tests/lib/audit-log.test.ts` must be tightened (require non-null `target_summary` / `diff_summary` for create/update/delete categories), and the `TODO(sec-10)` markers in `src/server.ts` must be removed.
