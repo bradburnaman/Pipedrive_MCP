@@ -1,6 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { POLICY_HASH } from './version-id.js';
+
+// Resolve capabilities.json relative to this module so the server works
+// regardless of CWD (e.g. when spawned by Claude Desktop). The path is
+// the same offset from src/lib/ and dist/lib/ — both are two levels deep.
+const DEFAULT_POLICY_PATH = fileURLToPath(new URL('../../capabilities.json', import.meta.url));
 
 function canonicalJson(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
@@ -48,7 +54,7 @@ export class PolicyHashMismatchError extends Error {
   }
 }
 
-export function loadPolicy(path = 'capabilities.json'): CapabilityPolicy {
+export function loadPolicy(path = DEFAULT_POLICY_PATH): CapabilityPolicy {
   const raw = readFileSync(path, 'utf8');
   const parsed = JSON.parse(raw) as CapabilityPolicy;
   const hash = createHash('sha256').update(canonicalJson(parsed)).digest('hex');
@@ -58,7 +64,7 @@ export function loadPolicy(path = 'capabilities.json'): CapabilityPolicy {
   return parsed;
 }
 
-export function recomputeHash(path = 'capabilities.json'): string {
+export function recomputeHash(path = DEFAULT_POLICY_PATH): string {
   const raw = readFileSync(path, 'utf8');
   return createHash('sha256').update(canonicalJson(JSON.parse(raw))).digest('hex');
 }
