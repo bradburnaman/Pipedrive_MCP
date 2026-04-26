@@ -8,6 +8,9 @@ import type { ServerConfig, ToolDefinition } from './types.js';
 import type { ReferenceResolver } from './lib/reference-resolver/index.js';
 import type { PipedriveClient } from './lib/pipedrive-client.js';
 import type { EntityResolver } from './lib/entity-resolver.js';
+import type { AuditLog, AuditCategory, AuditStatus } from './lib/audit-log.js';
+import { requestHash, extractEntityId } from './lib/audit-middleware.js';
+import { decorateReadResponse, type SafeDegradedRef } from './lib/safe-degraded-decorator.js';
 import { isToolEnabled } from './config.js';
 import { createDealTools } from './tools/deals.js';
 import { createPersonTools } from './tools/persons.js';
@@ -20,12 +23,21 @@ import { createFieldTools } from './tools/fields.js';
 import { createPracticePipelineTools } from './tools/practice-pipeline.js';
 import type { Logger } from 'pino';
 
+export interface ServerDeps {
+  auditLog: AuditLog;
+  safeDegraded: SafeDegradedRef;
+  // Bumped on every tool dispatch so the idle re-verify scheduler in index.ts
+  // can decide whether the server is quiet enough to walk the full chain.
+  activity: { lastActivityMs: number };
+}
+
 export function createServer(
   config: ServerConfig,
   client: PipedriveClient,
   resolver: ReferenceResolver,
   entityResolver: EntityResolver,
-  logger: Logger
+  logger: Logger,
+  deps: ServerDeps,
 ): McpServer {
   const server = new McpServer({
     name: 'pipedrive-mcp',
@@ -90,24 +102,82 @@ export function createServer(
   }));
 
   underlyingServer.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const toolName = request.params.name;
-    const tool = toolMap.get(toolName);
+    const params = (request.params.arguments ?? {}) as Record<string, unknown>;
+    return dispatchToolCall(request.params.name, params, toolMap, deps, logger);
+  });
 
-    if (!tool) {
+  return server;
+}
+
+// Exported for direct testing without round-tripping through MCP transport.
+// Index signature widens to match @modelcontextprotocol/sdk's loose result shape.
+export interface ToolCallResult {
+  content: { type: 'text'; text: string }[];
+  isError?: boolean;
+  [key: string]: unknown;
+}
+
+export async function dispatchToolCall(
+  toolName: string,
+  params: Record<string, unknown>,
+  toolMap: Map<string, ToolDefinition>,
+  deps: ServerDeps,
+  logger: Logger,
+): Promise<ToolCallResult> {
+  const tool = toolMap.get(toolName);
+  deps.activity.lastActivityMs = Date.now();
+
+  if (!tool) {
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ error: true, message: `Tool '${toolName}' not found` }) }],
+      isError: true,
+    };
+  }
+  return dispatchTool(tool, params, deps, logger);
+}
+
+async function dispatchTool(
+  tool: ToolDefinition,
+  params: Record<string, unknown>,
+  deps: ServerDeps,
+  logger: Logger,
+): Promise<ToolCallResult> {
+  const toolName = tool.name;
+    const startTime = Date.now();
+    const isWrite = tool.category !== 'read';
+    const reqHash = isWrite ? requestHash(toolName, params) : '';
+
+    // --- Safe-degraded gate for writes ---
+    if (isWrite && deps.safeDegraded.value) {
+      // TODO(sec-10): populate target_summary / diff_summary when per-tool helpers land.
+      deps.auditLog.insert({
+        tool: toolName,
+        category: tool.category as AuditCategory,
+        entity_type: null,
+        entity_id: extractEntityId(params, null),
+        status: 'safe_degraded_rejected' satisfies AuditStatus,
+        reason_code: deps.safeDegraded.reason ?? 'AUDIT_CHAIN_BROKEN',
+        request_hash: reqHash,
+        target_summary: null,
+        diff_summary: null,
+        idempotency_key: null,
+      });
+      const errorObj = {
+        error: true,
+        code: 503,
+        message: `Audit chain integrity failure (${deps.safeDegraded.reason ?? 'unknown'}). Writes disabled. Contact owner.`,
+      };
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: true, message: `Tool '${toolName}' not found` }) }],
+        content: [{ type: 'text' as const, text: JSON.stringify(errorObj, null, 2) }],
         isError: true,
       };
     }
-
-    const params = (request.params.arguments ?? {}) as Record<string, unknown>;
-    const startTime = Date.now();
 
     try {
       const result = await tool.handler(params);
       const duration = Date.now() - startTime;
 
-      // Audit log — PII-aware:
+      // Pino structured log — PII-aware:
       // DO log: tool name, entity IDs, duration, outcome, deal titles, stage names
       // DO NOT log: person names, emails, phones, note content, activity descriptions
       const logEntry: Record<string, unknown> = {
@@ -116,16 +186,41 @@ export function createServer(
         status: 'success',
       };
       if (params.id) logEntry.entity_id = params.id;
-      // Log deal titles (not PII) but not person names or note content
-      if (tool.category !== 'read' && toolName.includes('deal')) {
-        if (params.title) logEntry.deal_title = params.title;
-      }
+      if (isWrite && toolName.includes('deal') && params.title) logEntry.deal_title = params.title;
       if (params.stage) logEntry.stage = params.stage;
       if (params.pipeline) logEntry.pipeline = params.pipeline;
       logger.info(logEntry, 'Tool call completed');
 
+      // Tool-result error envelope ({ error: true, ... }) is success-on-the-wire
+      // but a logical failure — audit it as 'failure'.
+      const isLogicalError =
+        result && typeof result === 'object' && (result as { error?: boolean }).error === true;
+
+      if (isWrite) {
+        // TODO(sec-10): populate target_summary / diff_summary when per-tool helpers land.
+        deps.auditLog.insert({
+          tool: toolName,
+          category: tool.category as AuditCategory,
+          entity_type: null,
+          entity_id: extractEntityId(params, result),
+          status: (isLogicalError ? 'failure' : 'success') satisfies AuditStatus,
+          reason_code: isLogicalError
+            ? String((result as { code?: number | string }).code ?? 'API_ERROR')
+            : null,
+          request_hash: reqHash,
+          target_summary: null,
+          diff_summary: null,
+          idempotency_key: null,
+        });
+      }
+
+      // Decorate read results with the safe-degraded notice when the chain is
+      // broken. (The gate above already blocks writes; reads remain open but
+      // carry an in-band warning so callers see results may be untrustworthy.)
+      const out = isWrite ? result : decorateReadResponse(result, deps.safeDegraded);
+
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        content: [{ type: 'text' as const, text: JSON.stringify(out, null, 2) }],
       };
     } catch (err: unknown) {
       const duration = Date.now() - startTime;
@@ -134,7 +229,6 @@ export function createServer(
         ? err
         : { error: true, message };
 
-      // Audit log — error case
       logger.warn({
         tool: toolName,
         duration_ms: duration,
@@ -143,12 +237,24 @@ export function createServer(
         error_message: message,
       }, 'Tool call failed');
 
+      if (isWrite) {
+        deps.auditLog.insert({
+          tool: toolName,
+          category: tool.category as AuditCategory,
+          entity_type: null,
+          entity_id: extractEntityId(params, null),
+          status: 'failure' satisfies AuditStatus,
+          reason_code: 'EXCEPTION',
+          request_hash: reqHash,
+          target_summary: null,
+          diff_summary: null,
+          idempotency_key: null,
+        });
+      }
+
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(errorObj, null, 2) }],
         isError: true,
       };
     }
-  });
-
-  return server;
 }

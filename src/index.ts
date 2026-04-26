@@ -6,6 +6,8 @@ import {
 } from './lib/secret-store.js';
 import { probeClaudeDesktopConfig } from './lib/claude-desktop-probe.js';
 import { VERSION_ID, versionString } from './lib/version-id.js';
+import { AuditLog } from './lib/audit-log.js';
+import type { SafeDegradedRef } from './lib/safe-degraded-decorator.js';
 import { parseConfig } from './config.js';
 import { PipedriveClient } from './lib/pipedrive-client.js';
 import { ReferenceResolver } from './lib/reference-resolver/index.js';
@@ -130,8 +132,54 @@ async function main() {
   const resolver = new ReferenceResolver(client, logger);
   const entityResolver = new EntityResolver(client, logger);
 
+  // --- Audit log + safe-degraded gate (sec-06) ---
+  const auditLog = new AuditLog();
+  const safeDegraded: SafeDegradedRef = { value: false, reason: null };
+  const initialVerify = auditLog.verifyChain();
+  if (!initialVerify.ok) {
+    safeDegraded.value = true;
+    safeDegraded.reason = 'AUDIT_CHAIN_BROKEN';
+    // Emit to stderr only — never write the failure event to the tampered DB.
+    logger.error(
+      { breakAtId: initialVerify.breakAtId },
+      'AUDIT_CHAIN_BROKEN — entering safe-degraded mode. Writes disabled; reads carry _security_notice. Run `npm run audit-verify` for details.',
+    );
+  }
+
+  const activity = { lastActivityMs: Date.now() };
+
+  // 60s tail hot-check — cheap, catches in-flight tampering of recent rows.
+  const hotCheck = setInterval(() => {
+    if (safeDegraded.value) return;
+    const r = auditLog.verifyTail(100);
+    if (!r.ok) {
+      safeDegraded.value = true;
+      safeDegraded.reason = 'AUDIT_CHAIN_BROKEN_TAIL';
+      logger.error({ breakAtId: r.breakAtId }, 'AUDIT_CHAIN_BROKEN — tail hot-check detected tampering');
+    }
+  }, 60_000);
+  hotCheck.unref();
+
+  // 15-minute idle re-verify — full walk catches modifications outside the
+  // tail window. Only runs when the server has been quiet for 30s+.
+  const idleReverify = setInterval(() => {
+    if (safeDegraded.value) return;
+    if (Date.now() - activity.lastActivityMs < 30_000) return;
+    const r = auditLog.verifyChain();
+    if (!r.ok) {
+      safeDegraded.value = true;
+      safeDegraded.reason = 'AUDIT_CHAIN_BROKEN_IDLE_VERIFY';
+      logger.error({ breakAtId: r.breakAtId }, 'AUDIT_CHAIN_BROKEN — idle re-verify detected post-startup tampering');
+    }
+  }, 15 * 60_000);
+  idleReverify.unref();
+
   // Create MCP server with all dependencies
-  const server = createServer(config, client, resolver, entityResolver, logger);
+  const server = createServer(config, client, resolver, entityResolver, logger, {
+    auditLog,
+    safeDegraded,
+    activity,
+  });
 
   // Start transport
   if (config.transport === 'stdio') {
@@ -154,6 +202,7 @@ async function main() {
     }, 5000);
     try {
       await server.close();
+      auditLog.close();
     } finally {
       clearTimeout(shutdownTimeout);
       process.exit(0);
