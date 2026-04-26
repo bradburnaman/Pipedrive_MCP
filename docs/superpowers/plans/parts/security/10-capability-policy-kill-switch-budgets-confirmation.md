@@ -686,3 +686,23 @@ git commit -m "feat(security): capability policy + kill switch + read budgets + 
 ---
 
 **Done when:** all unit tests green; editing `capabilities.json` and **restarting** causes **exit 1** (startup mismatch); editing `capabilities.json` on a running server causes safe-degraded within 60s (runtime mismatch); `npm run kill-switch -- --off` rejects every write; broad `list-deals` requires `BROAD-READ:list-deals` but budget caps still apply regardless of confirm; `delete-deal` with `confirm: true` is rejected, with `confirm: "DELETE-DEAL:42"` alone is rejected (`CONFIRMATION_USER_MESSAGE_MISSING`), and with both `confirm` + `user_chat_message` containing the string succeeds (audit row carries the 16-char hash); 11th `update-deal` in 60s requires `BULK:11`.
+
+---
+
+## Implementation Status
+
+**Shipped:** 2026-04-26 across five commits on `security/api-key-hardening` (merged to `main` at `811ffba`):
+- `aa37eb4` — **sec-10a**: `capabilities.json` (32 tools enumerated; spec said "31" — actual source is 32), `scripts/embed-version.mjs` extended to compute canonical SHA-256 + emit `POLICY_HASH` / `POLICY_VERSION` into generated `version-id.ts`. `src/lib/capability-policy.ts` with `loadPolicy()` / `recomputeHash()` / `PolicyHashMismatchError`. Startup mismatch → exit 1 (moved before token resolution); runtime hot-check (60s) flips safe-degraded.
+- `babcf0d` — **sec-10b**: `src/lib/kill-switch.ts` (`writes_enabled` flag in `~/.bhg-pipedrive-mcp/config.json` mode 0o600); `src/bin/kill-switch.ts` (`--off|--on` + optional `--reason`, writes `KILL_SWITCH_FLIP` audit row). `dispatchTool` rejects writes with `WRITES_DISABLED` 503.
+- `5ed846b` — **sec-10c**: `src/lib/read-budget.ts` (per-session record/byte/pagination-depth limits + session-sticky broad-query confirmation per tool).
+- `ba11838` — **sec-10d**: `src/lib/typed-confirmation.ts` (`HIGH_RISK_DELETES` set, `resolveDeleteConfirmation`, `checkUserChatMessage` returning 16-char hex hash, `needsUpdateConfirmation` for destructive-field updates, `BulkDetector` sliding window). Confirmation gate order in `dispatchTool`: safe-degraded → kill-switch → typed-confirmation → read-budget → handler.
+- `3124a97` — **cleanup**: deleted `src/lib/policy.ts` placeholder; retired `TODO(sec-10)` comments; updated audit-log import to consume `POLICY_HASH` from generated `version-id.ts`.
+
+**Architecture deviations vs. the part-10 plan:**
+1. **Typed CRM confirmation is §10.6-lite, not §10.6.2** — the spec's confirmation subsystem (out-of-LLM cryptographic confirmation) is N/A because there is no outbound-send surface. What ships is friction + forensic capture (16-char SHA-256 of the user's chat message) per design spec §11. Documented in `SECURITY_CHECKLIST.md`.
+2. **Tool count 32, not 31** — `capabilities.json` enumerates the 32 tools that actually exist in `src/tools/*`, not the 31 the spec text implied.
+3. **Sec-10 discharges sec-06's deferred items** — `POLICY_HASH` placeholder gone (replaced by build-time hash in `version-id.ts`); `target_summary` / `diff_summary` populated for high-risk deletes (the latter carries `user_chat_message_hash=<16hex>`).
+
+**Post-merge fixes that landed on `main`:**
+- `96b2382` — `loadPolicy()` resolves `capabilities.json` relative to its module via `import.meta.url` instead of CWD-relative; was crashing with ENOENT when Claude Desktop spawned the server.
+- `8520b01` — `KillSwitch.writesEnabled` getter re-reads `config.json` on every check; the original cached the value at construction time, so the CLI's out-of-process flip silently did nothing on a running session. Pinned with a cross-process integration test.

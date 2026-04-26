@@ -284,3 +284,35 @@ git commit -m "test(security): adversarial PD-001..PD-010 + TC-AUDIT/POLICY/KILL
 ---
 
 **Done when:** all 14 tests run under `npm run test:integration`; each maps 1:1 to a row in spec §18; assertions are specific enough that silently weakening the corresponding control (e.g., switching typed confirmation back to `confirm: true`) breaks a test. PD-004's "expected: rollback undetected" is explicitly named as residual-risk documentation, not a defect.
+
+---
+
+## Implementation Status
+
+**Shipped:** 2026-04-26 across two commits on `security/api-key-hardening` (merged to `main` at `811ffba`):
+- `dd165ee` — sec-09 infra: deferred audit events pattern in `src/index.ts` (BREAK_GLASS_ENV_OVERRIDE, STALE_TOKEN_EXCEPTION, PERMISSION_REPAIRED rows now actually write); `BHG_CAPABILITIES_PATH` and `BHG_POLICY_HOT_CHECK_MS` env overrides for testability; `loadPolicy()` moved before token resolution so startup mismatch can exit without a network call.
+- `4be846f` — adversarial test suite: 14 test files, 63 tests at landing (64 after post-merge kill-switch regression test). All green under `npm run test:integration`.
+
+**Coverage:**
+
+| Test ID | File | Type |
+|---------|------|------|
+| PD-001 / 001b | `pd-001-env-override.integration.test.ts` | Logic / in-process |
+| PD-002 | `pd-002-destructive-injection.integration.test.ts` | In-process (6-step + framing) |
+| PD-003 | `pd-003-broad-scrape.integration.test.ts` | In-process |
+| PD-004 | `pd-004-audit-rollback.integration.test.ts` | In-process (residual-risk doc) |
+| PD-005 | `pd-005-sync-root-symlink.integration.test.ts` | Process-spawn |
+| PD-006 | `pd-006-url-sanitizer.integration.test.ts` | Logic |
+| PD-007 | `pd-007-stale-token.integration.test.ts` | Logic |
+| PD-008 | `pd-008-bulk-write.integration.test.ts` | In-process |
+| PD-009 | (untestable in automation) | macOS Keychain ACL bypass succeeds by design — documented |
+| PD-010 | `pd-010-dirty-build.integration.test.ts` | Process-spawn |
+| TC-AUDIT-1 | `tc-audit.integration.test.ts` | In-process |
+| TC-KILL-1 | `tc-kill.integration.test.ts` | In-process |
+| TC-PERM-1 | `tc-perm-001-permission-repair.integration.test.ts` | In-process |
+| TC-POLICY-1a / 1b | `tc-policy.integration.test.ts` | Process-spawn (1a) + in-process (1b) |
+
+**Deviations from the test plan:**
+- **TC-POLICY-1a uses `BHG_CAPABILITIES_PATH`** to point the spawn at a tampered file rather than mutating the real `capabilities.json`, and (post-merge fix `0f1e97a`) overrides `HOME` so the startup-failure audit row goes to a temp DB rather than the user's real audit.db.
+- **TC-POLICY-1b is in-process simulation, not timer-based** — drives the safe-degraded flag directly to assert the response path without waiting 60s for the real hot-check interval.
+- **`deals.integration.test.ts` excluded** from the security suite (`vitest.integration.config.ts`): it requires a live `PIPEDRIVE_API_TOKEN` + dotenv and is a separate live-sandbox concern.

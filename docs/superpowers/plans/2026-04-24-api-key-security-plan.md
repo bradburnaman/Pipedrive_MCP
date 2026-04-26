@@ -10,9 +10,9 @@ This release is a **local-hardening milestone**, not full architecture complianc
 
 **Tech additions:** `keytar` (runtime), `better-sqlite3` (runtime — moved from devDeps), build-time version + policy hash generator, committed `capabilities.json`.
 
-## Implementation Status (as of 2026-04-25)
+## Implementation Status (as of 2026-04-26 — shipped to `main`)
 
-Branch: `security/api-key-hardening`. See per-part files for shipped-status footers with commit SHAs and deviation notes.
+All 10 parts shipped. The `security/api-key-hardening` branch was merged to `main` with `--no-ff` at commit `811ffba` on 2026-04-26 and pushed to `origin/main`. The branch was then deleted locally. See per-part files for shipped-status footers with commit SHAs and deviation notes.
 
 | Part | Status | Commit | Notes |
 |------|--------|--------|-------|
@@ -24,18 +24,25 @@ Branch: `security/api-key-hardening`. See per-part files for shipped-status foot
 | sec-07 | shipped | `2b9e202` | esbuild added to lifecycle-scripts allowlist (transitive dev-only) |
 | sec-06a | shipped | `b72afd4` | core: `AuditLog` class + `audit-verify` CLI + `policy.ts` placeholder |
 | sec-06b | shipped | `e5e62cc` | wiring: central dispatch in `server.ts` (deviation from per-handler middleware spec); idle re-verify; safe-degraded gate |
-| sec-06 | **incomplete** | — | `target_summary`/`diff_summary` deferred to sec-10; `POLICY_HASH = 'PENDING_SEC_10'`; sec-10 must populate or `SECURITY_CHECKLIST.md` must accept NULL summaries for non-destructive writes |
-| sec-10 | not started | — | discharges sec-06 deferred items |
-| sec-09 | not started | — | adversarial tests; depends on sec-10 |
-| sec-08 | not started | — | docs cutover; merges last |
+| sec-06 | **discharged by sec-10** | `aa37eb4` + `3124a97` | sec-10 replaced `POLICY_HASH` placeholder with build-time hash; `target_summary` / `diff_summary` populated; `policy.ts` placeholder deleted |
+| sec-10 | shipped | `aa37eb4`, `babcf0d`, `5ed846b`, `ba11838`, `3124a97` | capability policy hash-pinned (10a) + kill switch (10b) + read budgets (10c) + typed CRM destructive confirmation (10d) + cleanup |
+| sec-09 | shipped | `dd165ee` (infra) + `4be846f` (64-test suite) | in-process harness + process-spawn tests + sanitizer/rotation logic tests |
+| sec-08 | shipped | `4a10f2a` | README rewrite, SECURITY_CHECKLIST.md created, `.env.example` deleted |
+
+**Post-merge fixes on `main`:**
+- `96b2382` — `loadPolicy()` resolves `capabilities.json` relative to module, not CWD (Claude Desktop spawn was crashing with ENOENT).
+- `8520b01` — `KillSwitch.writesEnabled` re-reads `config.json` on every check; out-of-process CLI flips now affect the running server without restart.
+- `0f1e97a` — TC-POLICY-1a overrides `HOME` so the test-spawn's startup-failure audit row goes to a temp dir, not the user's real `~/.bhg-pipedrive-mcp/audit.db` (avoids contention with a live server instance).
+- `1658fbb` — Owner sign-off `BB` on deferred-controls D-01..D-06, dated 2026-04-26.
+- `25bb89c` — `package-lock.json` refresh from `npm audit` churn (transitive dev-dep version bumps; no runtime impact).
 
 **Key architecture deviations vs. spec:**
 1. **Central dispatch wrapping (sec-06b)**: `server.ts:dispatchToolCall` audits writes and decorates reads at the single SDK request handler; the spec proposed wrapping every tool handler with an `auditWrite()` HOF. Same security guarantee; no per-tool churn.
-2. **`target_summary` / `diff_summary` deferred to sec-10**: schema accepts NULL today; `tests/lib/audit-log.test.ts` has a `TODO(sec-10)` assertion; three call sites in `src/server.ts` are marked `TODO(sec-10)`.
-3. **`POLICY_HASH` placeholder**: `src/lib/policy.ts` exports the literal string `'PENDING_SEC_10'`. sec-10 replaces it with the SHA-256 of the canonical capability policy (one-line edit).
-4. **esbuild in lifecycle-scripts allowlist (sec-07)**: needed because `tsx` and `vitest > vite` pull esbuild's binary postinstall. Verified dev-only via `npm ls --omit=dev esbuild` (empty).
+2. **Typed CRM confirmation is §10.6-lite, not §10.6.2** (sec-10d): the spec called for friction + audit on destructive CRM operations and explicitly notes that fabricated `user_chat_message` passes (it is friction + forensic capture, not cryptographic proof of intent). Full §10.6.2 cryptographic confirmation is N/A — there is no outbound-send surface to gate.
+3. **esbuild in lifecycle-scripts allowlist (sec-07)**: needed because `tsx` and `vitest > vite` pull esbuild's binary postinstall. Verified dev-only via `npm ls --omit=dev esbuild` (empty).
+4. **PD-009 (Keychain ACL)** documented as untestable in automation: macOS ACL on a Node interpreter cannot constrain to this binary, so the AES-256-GCM encryption wrapper is the live confidentiality control. Documented at top of `src/lib/secret-store.ts` and in `SECURITY_CHECKLIST.md`.
 
-**Production-readiness gate** (per spec §16): even with all 10 parts shipped, this remains restricted to single-user local interactive use until a remote audit-log mirror exists. Do not characterize the merged branch as "production-ready" without that mirror.
+**Production-readiness gate** (per spec §16): single-user local interactive use only until a remote audit-log mirror exists. Deferred controls D-01..D-06 owner-signed `BB` on 2026-04-26 in `SECURITY_CHECKLIST.md`. Do not characterize this milestone as "production-ready" without the mirror.
 
 ## Pre-work (manual, non-code — BEFORE Part sec-01)
 

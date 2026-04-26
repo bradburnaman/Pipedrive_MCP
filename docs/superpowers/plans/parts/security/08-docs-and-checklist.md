@@ -348,3 +348,20 @@ git commit -m "docs(security): README rewrite, SECURITY_CHECKLIST, delete .env* 
 ---
 
 **Done when:** `.env*` are physically gone; README has no `.env` references; `SECURITY_CHECKLIST.md` exists with every applicable row checked; final sweep greps clean; end-to-end manual run passes.
+
+---
+
+## Implementation Status
+
+**Shipped:** 2026-04-26 — commit `4a10f2a` on `security/api-key-hardening` (merged to `main` at `811ffba`).
+
+- `.env.example` deleted; `.gitignore` continues to exclude `.env`.
+- README rewritten: Setup → `npm run setup` Keychain flow; new Kill switch and Override flags sections; Troubleshooting adds SyncRootError / no-token-in-Keychain / stale token / audit-chain-broken / policy-hash-mismatch entries; Development section adds `security:check`, `audit-verify`, sec-09 integration suite vs. live sandbox tests; tool count corrected 31 → 32.
+- `SECURITY_CHECKLIST.md` created with the spec §16 / architecture §13 row set fully filled in. **Two scope deviations from the template** (template predated sec-10's final shape):
+  1. sec-10 controls (capability policy §10.8, session retrieval budgets §10.11, typed CRM confirmation) are marked `[x]` shipped with evidence pointers, not `[N/A]`.
+  2. **Typed CRM confirmation worded as §10.6-lite friction/audit** per Brad's instruction; full §10.6.2 cryptographic confirmation subsystem remains `[N/A]` because there is no outbound-send surface to gate.
+- Sec-09 adversarial test coverage table embedded with file pointers (PD-001..010 + TC-AUDIT/KILL/PERM/POLICY).
+- Production approval block: single-user local interactive only until the remote audit mirror exists.
+- Deferred-controls D-01..D-06 dated 2026-04-26 with `<initials>` placeholders; owner sign-off `BB` recorded post-merge at commit `1658fbb`.
+- Pipeline at sec-08 close: typecheck clean, 506 unit + 63 integration tests pass, `security:check` passes, build OK. (Integration count rose to 64 with the post-merge kill-switch cross-process regression test.)
+- Manual end-to-end completed by Brad on 2026-04-26.
