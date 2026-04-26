@@ -13,6 +13,14 @@ import { requestHash, extractEntityId } from './lib/audit-middleware.js';
 import { decorateReadResponse, type SafeDegradedRef } from './lib/safe-degraded-decorator.js';
 import { KillSwitch } from './lib/kill-switch.js';
 import { ReadBudget } from './lib/read-budget.js';
+import type { CapabilityPolicy } from './lib/capability-policy.js';
+import {
+  isHighRiskDelete,
+  resolveDeleteConfirmation,
+  checkUserChatMessage,
+  needsUpdateConfirmation,
+  BulkDetector,
+} from './lib/typed-confirmation.js';
 import { isToolEnabled } from './config.js';
 import { createDealTools } from './tools/deals.js';
 import { createPersonTools } from './tools/persons.js';
@@ -30,6 +38,8 @@ export interface ServerDeps {
   safeDegraded: SafeDegradedRef;
   killSwitch: KillSwitch;
   readBudget: ReadBudget;
+  policy: CapabilityPolicy;
+  bulkDetector: BulkDetector;
   // Bumped on every tool dispatch so the idle re-verify scheduler in index.ts
   // can decide whether the server is quiet enough to walk the full chain.
   activity: { lastActivityMs: number };
@@ -203,6 +213,108 @@ async function dispatchTool(
       };
     }
 
+    // --- Typed destructive confirmation gate ---
+    if (isWrite) {
+      const toolPolicy = deps.policy.tools[toolName];
+      const entityId = (params as { id?: string | number }).id ?? '?';
+      const confirm = typeof params.confirm === 'string' ? params.confirm : undefined;
+
+      // 1. Delete confirmation (all deletes require typed confirm string)
+      if (toolPolicy?.destructive && toolPolicy.confirmation_format) {
+        const required = resolveDeleteConfirmation(toolPolicy, entityId);
+        if (confirm !== required) {
+          deps.auditLog.insert({
+            tool: toolName, category: tool.category as AuditCategory,
+            entity_type: null, entity_id: String(entityId),
+            status: 'rejected', reason_code: 'CONFIRMATION_REQUIRED',
+            request_hash: reqHash, target_summary: null, diff_summary: null, idempotency_key: null,
+          });
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              error: true, code: 428, reason: 'CONFIRMATION_REQUIRED',
+              required_confirmation: required,
+              message: `Destructive action. Re-invoke with confirm: "${required}".` +
+                (isHighRiskDelete(toolName)
+                  ? ` Also include user_chat_message: the user's literal chat message that contains "${required}".`
+                  : ''),
+            }, null, 2) }],
+            isError: true,
+          };
+        }
+
+        // 1b. High-risk deletes also require user_chat_message containing the confirm string
+        if (isHighRiskDelete(toolName)) {
+          const ucm = (params as { user_chat_message?: string }).user_chat_message;
+          const check = checkUserChatMessage(ucm, required);
+          if (!check.ok) {
+            deps.auditLog.insert({
+              tool: toolName, category: tool.category as AuditCategory,
+              entity_type: null, entity_id: String(entityId),
+              status: 'rejected',
+              reason_code: check.reason === 'MISSING'
+                ? 'CONFIRMATION_USER_MESSAGE_MISSING'
+                : 'CONFIRMATION_USER_MESSAGE_MISMATCH',
+              request_hash: reqHash, target_summary: null, diff_summary: null, idempotency_key: null,
+            });
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({
+                error: true, code: 428, reason: 'CONFIRMATION_USER_MESSAGE_REQUIRED',
+                required_confirmation: required,
+                message: `High-risk delete. Include user_chat_message (the user's literal chat message) containing "${required}".`,
+              }, null, 2) }],
+              isError: true,
+            };
+          }
+          // Stash hash for success-path audit row
+          (params as Record<string, unknown>)._userChatMessageHash = check.hash;
+        }
+      }
+
+      // 2. Destructive-field update confirmation
+      if (tool.category === 'update' && toolPolicy) {
+        const hit = needsUpdateConfirmation(toolPolicy, params);
+        if (hit && confirm !== hit.required) {
+          deps.auditLog.insert({
+            tool: toolName, category: 'update' as AuditCategory,
+            entity_type: null, entity_id: String(entityId),
+            status: 'rejected', reason_code: 'CONFIRMATION_REQUIRED',
+            request_hash: reqHash,
+            target_summary: `destructive_update_field=${hit.field}`,
+            diff_summary: null, idempotency_key: null,
+          });
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              error: true, code: 428, reason: 'CONFIRMATION_REQUIRED',
+              required_confirmation: hit.required,
+              message: `Update touches destructive field "${hit.field}". Re-invoke with confirm: "${hit.required}".`,
+            }, null, 2) }],
+            isError: true,
+          };
+        }
+      }
+
+      // 3. Bulk detector
+      const bulkCheck = deps.bulkDetector.needsConfirmation(
+        toolName, confirm, deps.policy.bulk_detector.confirmation_format,
+      );
+      if (!bulkCheck.ok) {
+        deps.auditLog.insert({
+          tool: toolName, category: tool.category as AuditCategory,
+          entity_type: null, entity_id: null,
+          status: 'rejected', reason_code: 'BULK_CONFIRMATION_REQUIRED',
+          request_hash: reqHash, target_summary: null, diff_summary: null, idempotency_key: null,
+        });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: true, code: 428, reason: 'BULK_CONFIRMATION_REQUIRED',
+            required_confirmation: bulkCheck.required,
+            message: `Bulk pattern detected. Re-invoke with confirm: "${bulkCheck.required}".`,
+          }, null, 2) }],
+          isError: true,
+        };
+      }
+    }
+
     // --- Read-budget gate ---
     if (!isWrite) {
       const confirm = typeof params.confirm === 'string' ? params.confirm : undefined;
@@ -293,7 +405,7 @@ async function dispatchTool(
         result && typeof result === 'object' && (result as { error?: boolean }).error === true;
 
       if (isWrite) {
-        // TODO(sec-10): populate target_summary / diff_summary when per-tool helpers land.
+        const ucmHash = (params as Record<string, unknown>)._userChatMessageHash;
         deps.auditLog.insert({
           tool: toolName,
           category: tool.category as AuditCategory,
@@ -305,7 +417,7 @@ async function dispatchTool(
             : null,
           request_hash: reqHash,
           target_summary: null,
-          diff_summary: null,
+          diff_summary: typeof ucmHash === 'string' ? `user_chat_message_hash=${ucmHash}` : null,
           idempotency_key: null,
         });
       }

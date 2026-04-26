@@ -8,6 +8,8 @@ import { Writable } from 'node:stream';
 import { dispatchToolCall, type ServerDeps, type ToolCallResult } from '../src/server.js';
 import { AuditLog } from '../src/lib/audit-log.js';
 import { ReadBudget } from '../src/lib/read-budget.js';
+import { BulkDetector } from '../src/lib/typed-confirmation.js';
+import type { CapabilityPolicy } from '../src/lib/capability-policy.js';
 import type { ToolDefinition } from '../src/types.js';
 
 const noOpReadBudget = new ReadBudget({
@@ -17,6 +19,16 @@ const noOpReadBudget = new ReadBudget({
   broad_query_confirmation: false,
   broad_query_confirmation_format: 'BROAD-READ:<tool>',
 });
+
+const noOpPolicy: CapabilityPolicy = {
+  version: '1.0.0',
+  writes_enabled_default: true,
+  tools: {},
+  read_budgets: { max_records_per_session: 10_000, max_bytes_per_session: 10_485_760, max_pagination_depth: 100, broad_query_confirmation: false, broad_query_confirmation_format: 'BROAD-READ:<tool>' },
+  bulk_detector: { window_seconds: 60, threshold: 1_000_000, confirmation_format: 'BULK:<count>' },
+};
+
+const noOpBulkDetector = new BulkDetector(60, 1_000_000);
 
 let tmp: string;
 let dbPath: string;
@@ -45,6 +57,8 @@ beforeEach(() => {
     safeDegraded: { value: false, reason: null },
     killSwitch: { writesEnabled: true } as any,
     readBudget: noOpReadBudget,
+    policy: noOpPolicy,
+    bulkDetector: noOpBulkDetector,
     activity: { lastActivityMs: 0 },
   };
 });
