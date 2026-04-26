@@ -12,6 +12,7 @@ import type { AuditLog, AuditCategory, AuditStatus } from './lib/audit-log.js';
 import { requestHash, extractEntityId } from './lib/audit-middleware.js';
 import { decorateReadResponse, type SafeDegradedRef } from './lib/safe-degraded-decorator.js';
 import { KillSwitch } from './lib/kill-switch.js';
+import { ReadBudget } from './lib/read-budget.js';
 import { isToolEnabled } from './config.js';
 import { createDealTools } from './tools/deals.js';
 import { createPersonTools } from './tools/persons.js';
@@ -28,6 +29,7 @@ export interface ServerDeps {
   auditLog: AuditLog;
   safeDegraded: SafeDegradedRef;
   killSwitch: KillSwitch;
+  readBudget: ReadBudget;
   // Bumped on every tool dispatch so the idle re-verify scheduler in index.ts
   // can decide whether the server is quiet enough to walk the full chain.
   activity: { lastActivityMs: number };
@@ -201,6 +203,72 @@ async function dispatchTool(
       };
     }
 
+    // --- Read-budget gate ---
+    if (!isWrite) {
+      const confirm = typeof params.confirm === 'string' ? params.confirm : undefined;
+      const broad = deps.readBudget.needsBroadConfirmation(toolName, params, confirm);
+      if (!broad.ok) {
+        deps.auditLog.insert({
+          tool: toolName, category: 'broad_query', entity_type: null, entity_id: null,
+          status: 'rejected', reason_code: 'BROAD_READ_CONFIRMATION_REQUIRED',
+          request_hash: '', target_summary: null, diff_summary: null, idempotency_key: null,
+        });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: true, code: 428, reason: 'BROAD_READ_CONFIRMATION_REQUIRED',
+            required_confirmation: broad.required,
+            message: `Broad query detected. Re-invoke with confirm: "${broad.required}".`,
+          }, null, 2) }],
+          isError: true,
+        };
+      }
+      const recCheck = deps.readBudget.checkRecords();
+      if (!recCheck.ok) {
+        deps.auditLog.insert({
+          tool: toolName, category: 'read_budget', entity_type: null, entity_id: null,
+          status: 'rejected', reason_code: recCheck.reason!,
+          request_hash: '', target_summary: null, diff_summary: null, idempotency_key: null,
+        });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: true, code: 429, reason: recCheck.reason,
+            message: 'Session read record budget exceeded.',
+          }, null, 2) }],
+          isError: true,
+        };
+      }
+      const bytCheck = deps.readBudget.checkBytes();
+      if (!bytCheck.ok) {
+        deps.auditLog.insert({
+          tool: toolName, category: 'read_budget', entity_type: null, entity_id: null,
+          status: 'rejected', reason_code: bytCheck.reason!,
+          request_hash: '', target_summary: null, diff_summary: null, idempotency_key: null,
+        });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: true, code: 429, reason: bytCheck.reason,
+            message: 'Session read byte budget exceeded.',
+          }, null, 2) }],
+          isError: true,
+        };
+      }
+      const pagCheck = deps.readBudget.checkPagination(toolName);
+      if (!pagCheck.ok) {
+        deps.auditLog.insert({
+          tool: toolName, category: 'read_budget', entity_type: null, entity_id: null,
+          status: 'rejected', reason_code: pagCheck.reason!,
+          request_hash: '', target_summary: null, diff_summary: null, idempotency_key: null,
+        });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            error: true, code: 429, reason: pagCheck.reason,
+            message: 'Pagination depth budget exceeded for this tool.',
+          }, null, 2) }],
+          isError: true,
+        };
+      }
+    }
+
     try {
       const result = await tool.handler(params);
       const duration = Date.now() - startTime;
@@ -240,6 +308,17 @@ async function dispatchTool(
           diff_summary: null,
           idempotency_key: null,
         });
+      }
+
+      // Post-call read accounting: records + bytes + pagination depth.
+      if (!isWrite && result && typeof result === 'object') {
+        const items = (result as { items?: unknown[] }).items;
+        if (Array.isArray(items)) {
+          const n = items.length;
+          const b = Buffer.byteLength(JSON.stringify(items));
+          const isPaginated = params.cursor !== undefined || params.start !== undefined;
+          deps.readBudget.add(toolName, n, b, isPaginated);
+        }
       }
 
       // Decorate read results with the safe-degraded notice when the chain is

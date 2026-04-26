@@ -9,6 +9,7 @@ import { VERSION_ID, versionString, POLICY_HASH } from './lib/version-id.js';
 import { AuditLog } from './lib/audit-log.js';
 import { loadPolicy, recomputeHash, PolicyHashMismatchError } from './lib/capability-policy.js';
 import { KillSwitch } from './lib/kill-switch.js';
+import { ReadBudget } from './lib/read-budget.js';
 import type { SafeDegradedRef } from './lib/safe-degraded-decorator.js';
 import { parseConfig } from './config.js';
 import { PipedriveClient } from './lib/pipedrive-client.js';
@@ -161,6 +162,7 @@ async function main() {
   }
 
   const killSwitch = new KillSwitch();
+  const readBudget = new ReadBudget(policy.read_budgets);
 
   // --- Audit log + safe-degraded gate (sec-06) ---
   const auditLog = new AuditLog();
@@ -233,6 +235,7 @@ async function main() {
     auditLog,
     safeDegraded,
     killSwitch,
+    readBudget,
     activity,
   });
 

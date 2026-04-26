@@ -7,7 +7,16 @@ import pino from 'pino';
 import { Writable } from 'node:stream';
 import { dispatchToolCall, type ServerDeps, type ToolCallResult } from '../src/server.js';
 import { AuditLog } from '../src/lib/audit-log.js';
+import { ReadBudget } from '../src/lib/read-budget.js';
 import type { ToolDefinition } from '../src/types.js';
+
+const noOpReadBudget = new ReadBudget({
+  max_records_per_session: 10_000,
+  max_bytes_per_session: 10_485_760,
+  max_pagination_depth: 100,
+  broad_query_confirmation: false,
+  broad_query_confirmation_format: 'BROAD-READ:<tool>',
+});
 
 let tmp: string;
 let dbPath: string;
@@ -35,6 +44,7 @@ beforeEach(() => {
     auditLog,
     safeDegraded: { value: false, reason: null },
     killSwitch: { writesEnabled: true } as any,
+    readBudget: noOpReadBudget,
     activity: { lastActivityMs: 0 },
   };
 });
