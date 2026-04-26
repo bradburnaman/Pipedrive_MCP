@@ -11,6 +11,7 @@ import type { EntityResolver } from './lib/entity-resolver.js';
 import type { AuditLog, AuditCategory, AuditStatus } from './lib/audit-log.js';
 import { requestHash, extractEntityId } from './lib/audit-middleware.js';
 import { decorateReadResponse, type SafeDegradedRef } from './lib/safe-degraded-decorator.js';
+import { KillSwitch } from './lib/kill-switch.js';
 import { isToolEnabled } from './config.js';
 import { createDealTools } from './tools/deals.js';
 import { createPersonTools } from './tools/persons.js';
@@ -26,6 +27,7 @@ import type { Logger } from 'pino';
 export interface ServerDeps {
   auditLog: AuditLog;
   safeDegraded: SafeDegradedRef;
+  killSwitch: KillSwitch;
   // Bumped on every tool dispatch so the idle re-verify scheduler in index.ts
   // can decide whether the server is quiet enough to walk the full chain.
   activity: { lastActivityMs: number };
@@ -166,6 +168,32 @@ async function dispatchTool(
         error: true,
         code: 503,
         message: `Audit chain integrity failure (${deps.safeDegraded.reason ?? 'unknown'}). Writes disabled. Contact owner.`,
+      };
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(errorObj, null, 2) }],
+        isError: true,
+      };
+    }
+
+    // --- Kill-switch gate for writes ---
+    if (isWrite && !deps.killSwitch.writesEnabled) {
+      deps.auditLog.insert({
+        tool: toolName,
+        category: tool.category as AuditCategory,
+        entity_type: null,
+        entity_id: extractEntityId(params, null),
+        status: 'rejected' satisfies AuditStatus,
+        reason_code: 'WRITES_DISABLED',
+        request_hash: reqHash,
+        target_summary: null,
+        diff_summary: null,
+        idempotency_key: null,
+      });
+      const errorObj = {
+        error: true,
+        code: 503,
+        reason: 'WRITES_DISABLED',
+        message: 'Writes are currently disabled. Re-enable via `npm run kill-switch -- --on`.',
       };
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(errorObj, null, 2) }],

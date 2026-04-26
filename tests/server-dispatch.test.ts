@@ -34,6 +34,7 @@ beforeEach(() => {
   deps = {
     auditLog,
     safeDegraded: { value: false, reason: null },
+    killSwitch: { writesEnabled: true } as any,
     activity: { lastActivityMs: 0 },
   };
 });
