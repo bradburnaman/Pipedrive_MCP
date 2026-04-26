@@ -1,0 +1,59 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install with lockfile (npm ci)
+        run: npm ci
+
+      - name: Lockfile integrity — no drift
+        run: |
+          git diff --exit-code package-lock.json || \
+            (echo "package-lock.json drifted after npm ci — lockfile inconsistent" && exit 1)
+
+      - name: Forbidden-pattern grep
+        run: bash scripts/check-forbidden-patterns.sh
+
+      - name: Lifecycle-script allowlist
+        run: node scripts/check-lifecycle-scripts.mjs
+
+      - name: npm audit (high/critical, production)
+        run: npm audit --audit-level=high --production
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build (runs prebuild embed-version)
+        env:
+          CI: 'true'
+        run: npm run build
+
+      - name: Generate SBOM
+        run: |
+          mkdir -p dist
+          npx --yes @cyclonedx/cdxgen -o dist/sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: dist/sbom.json
