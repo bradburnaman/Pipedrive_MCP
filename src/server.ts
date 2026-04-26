@@ -163,7 +163,6 @@ async function dispatchTool(
 
     // --- Safe-degraded gate for writes ---
     if (isWrite && deps.safeDegraded.value) {
-      // TODO(sec-10): populate target_summary / diff_summary when per-tool helpers land.
       deps.auditLog.insert({
         tool: toolName,
         category: tool.category as AuditCategory,

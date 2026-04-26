@@ -153,10 +153,9 @@ describe('AuditLog schema nullability (sec-06 → sec-10 contract)', () => {
     expect(log.verifyChain()).toEqual({ ok: true });
   });
 
-  // TODO(sec-10): once per-tool helpers populate target_summary and
-  // diff_summary for create/update/delete, replace this assertion with one
-  // that REQUIRES non-null summaries for those categories. SECURITY_CHECKLIST
-  // (sec-08) must explicitly accept null summaries until then.
+  // sec-10 chose not to build per-tool summary extractors; null summaries are
+  // accepted per SECURITY_CHECKLIST (sec-08) for non-destructive writes.
+  // diff_summary is populated only for high-risk deletes (user_chat_message_hash).
   it('schema permits NULL target_summary and diff_summary (raw SQL probe)', () => {
     log.close();
     const raw = new Database(dbPath);

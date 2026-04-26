@@ -45,10 +45,10 @@ export interface AuditRow {
   status: AuditStatus;
   reason_code: string | null;
   request_hash: string;
-  // TODO(sec-10): target_summary and diff_summary remain nullable until per-tool
-  // helpers land alongside the confirmation flow. sec-06 audit chain is complete
-  // without them; sec-10 either populates them or the SECURITY_CHECKLIST
-  // explicitly accepts null summaries for non-destructive writes.
+  // target_summary and diff_summary are nullable. sec-10 populates diff_summary
+  // with user_chat_message_hash for high-risk deletes; all other write paths
+  // leave both null. SECURITY_CHECKLIST (sec-08) explicitly accepts null
+  // summaries for non-destructive writes.
   target_summary: string | null;
   diff_summary: string | null;
   idempotency_key: string | null;
